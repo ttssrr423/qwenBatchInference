@@ -8,12 +8,21 @@ master代码仅针对qwen1.5-14b-chat-int4-gptq进行的推理加速，如果更
 
 理论支持任意transformers架构下 `channels=hidden_size/num_attention_heads = 128`的非moe模型。
 
-模型加载完全本地化，具体参照`serving/liteqwen_inferer.py`,使用了本地路径`qwen2/`下python模型代码版本的tokenizer和config，以及`scripts/liteqwen_py/connector.py`下加载了`configuration.json`配置的本地路径模型`.bin`或`.safetensor`文件。**注意：如果你使用的是`2024-03-26`之后下载的模型文件，需要用你的版本的文件覆盖`qwen2/config.json`。新旧参数权重不同，且`intermediate_size`数值也不同。** 最好整个qwen2文件夹内的都用新版本覆盖。
+模型加载完全本地化，具体参照`serving/liteqwen_inferer.py`,使用了本地路径`qwen2/`下python模型代码版本的tokenizer和config，以及`scripts/liteqwen_py/connector.py`下加载了`configuration.json`配置的本地路径模型`.bin`或`.safetensor`文件。**注意：如果你使用的是`2024-03-26`之后下载的模型文件，需要检查你的版本的qwen模型的`config.json`。新旧参数权重不同，且`intermediate_size`数值也不同。需要确认你的本地模型的`intermediate_size`与项目路径`qwen2/config.json`中的数值一致。**。
 
 不支持按照模型名/id从互联网下载，避免模型版本变动。
 可以本地python推理`scripts/try_console_inf.py`验证模型的pytorch推理结果。
 
 peft版本0.4.0之后，需要注意lora模型的`adapter_config.json`中`"use_rslora": false`参数，需要为`false`才能推理结果正确。如果为true，lora scale计算时需要增加sqrt操作，需要修改`src/forward_gpu.cu`里的对应方法。
+
+### 推理性能对比
+条件：单卡v100，16并发，input token数44，平均reply字符数235，max_sequence_length(max-model-len)=4096。无加载lora
+
+vllm吞吐量：419字符/秒，显存占用29.5G
+
+liteqwen吞吐量：204字符/秒，显存占用12.9G
+
+吞吐量仍存在一定差距，但vllm应该是使用了更大的推理batch，所以activation占用较多。Liteqwen兼顾了显存优化，在加载lora后也能保证16G显存推理。
 
 ### 样本batch分割
 基于continuous batch进行的llm推理加速，flash attention使用cutlass_fmha计算prefill阶段的attention；decode attention是自主实现的算子（参考了falsh attention）。量化使用exllama的gptq linear。支持lora切换，会将请求按照时间顺序切分batch，遇到新请求的lora改变，或已经拼接到max_batch_size，或kv-cache缓存剩余空间无法容纳新请求的max_length时，会暂停请求的reload，推理当前batch。当前batch内任意样本完结后恢复新样本reload过程。
