@@ -18,11 +18,11 @@ peft版本0.4.0之后，需要注意lora模型的`adapter_config.json`中`"use_r
 ### 推理性能对比
 条件：单卡v100，16并发，input token数44，平均reply字符数235，max_sequence_length(max-model-len)=4096。无加载lora
 
-vllm吞吐量：419字符/秒，显存占用29.5G
+vllm吞吐量：419字符/秒，显存占用14.8G (--gpu-memory-utilization 限制)
 
 liteqwen吞吐量：204字符/秒，显存占用12.9G
 
-吞吐量仍存在一定差距，但vllm应该是使用了更大的推理batch，所以activation占用较多。Liteqwen兼顾了显存优化，在加载lora后也能保证16G显存推理。
+吞吐量仍存在一定差距，需要后续优化。
 
 ### 样本batch分割
 基于continuous batch进行的llm推理加速，flash attention使用cutlass_fmha计算prefill阶段的attention；decode attention是自主实现的算子（参考了falsh attention）。量化使用exllama的gptq linear。支持lora切换，会将请求按照时间顺序切分batch，遇到新请求的lora改变，或已经拼接到max_batch_size，或kv-cache缓存剩余空间无法容纳新请求的max_length时，会暂停请求的reload，推理当前batch。当前batch内任意样本完结后恢复新样本reload过程。
