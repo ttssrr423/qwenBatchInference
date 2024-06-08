@@ -116,6 +116,13 @@ void test_cache() {
     kv_cache_ref->free(std::string("req002"));
     bool suc4 = kv_cache_ref->allocate_cache(std::string("req004"), 256); // 剩余 001, 004, 003
 
+    // 初始化样本kv-cache指针
+    liteqwen::StringArray prefill_req_ids;
+    prefill_req_ids.Init(512, 16);
+    prefill_req_ids.push_back("req004");
+    kv_cache_ref->scatter_example_ptrs(prefill_req_ids, layer_id);
+
+    // ========= 写入prefill KV===============
     auto dummy_k = liteqwen::Data(liteqwen::DataType::FLOAT16, std::vector<int>{dummy_len, kv_size}, 0, true);
     auto dummy_v = liteqwen::Data(liteqwen::DataType::FLOAT16, std::vector<int>{dummy_len, kv_size}, 0, true);
     dummy_k.Allocate();
@@ -127,11 +134,26 @@ void test_cache() {
     dummy_k.Fp32CpuToFp16Upload(0, dummy_values_cpu);
     dummy_v.Fp32CpuToFp16Upload(0, dummy_values_cpu);
     dummy_k.print(std::string("dummy_kv_value"));
-    // 最终生效cache长度 = (写入长度dummy_len=70) +（write_cache_shift=2), 按照最终生效长度增量写入prefill kv
-    kv_cache_ref->write_layer_kv(std::string("req004"), layer_id, std::pair<liteqwen::Data*, liteqwen::Data*>(&dummy_k, &dummy_v), 2, 0, dummy_len); // read_tensor_shift=0, write_cache_shift=2
-    int prefill_len = dummy_len + 2;
+    // 最终生效cache长度 = (写入长度dummy_len=70) 按照最终生效长度增量写入prefill kv
+    auto cpu_prefill_starts = new int[max_B+1];
+    cpu_prefill_starts[0] = 0;
+    cpu_prefill_starts[1] = dummy_len;
+    auto cpu_prefill_bids = new uint8_t[max_BL];
+    for (int i=0; i<(dummy_len); i++) {
+        int batch_id = 0;
+        cpu_prefill_bids[i] = static_cast<uint8_t>(batch_id);
+    }
+    auto prefill_pos_starts = liteqwen::Data(liteqwen::DataType::INT32, std::vector<int>{max_B+1}, 0, true);
+    prefill_pos_starts.Allocate();
+    UploadInt32(prefill_pos_starts.cudaData, (uint8_t*)cpu_prefill_starts, 0, 0, 0, static_cast<size_t>(2), static_cast<size_t>(max_B+1), true);
+    auto prefill_bids = liteqwen::Data(liteqwen::DataType::INT8, std::vector<int>{max_BL}, 0, true);
+    prefill_bids.Allocate();
+    UploadData(liteqwen::DataType::INT8, prefill_bids.cudaData, cpu_prefill_bids, 0, 0, 0, max_BL);
+    kv_cache_ref->write_example_kvs_to_cache(true, prefill_req_ids.size(), layer_id, std::pair<liteqwen::Data*, liteqwen::Data*>(&dummy_k, &dummy_v), prefill_pos_starts, prefill_bids, max_B, dummy_len, kv_heads, channels);
+    
+    // ============ 增量写入decode kv cache ============
+    int prefill_len = dummy_len;
     DeviceSynchronize();
-
     // 准备 prefill_len+1步的增量数据（request_ids=[req004], dynamic_bsz=1, dynamic_bl=prefill_len+1）。
     req_ids.clear();
     req_ids.push_back(std::string("req004"));
@@ -157,21 +179,14 @@ void test_cache() {
     }
 
     auto pos_starts = liteqwen::Data(liteqwen::DataType::INT32, std::vector<int>{max_B+1}, 0, true);
-    auto pos_offsets = liteqwen::Data(liteqwen::DataType::INT64, std::vector<int>{2 * max_B}, 0, true); // 中间结果
-    int ptr_data_len = sizeof(void*) * 2 * max_B / sizeof(uint8_t); // ptrs = [&k1, &v1, &k2, &v2, ...]
-    auto batch_kv_ptrs = liteqwen::Data(liteqwen::DataType::INT8, std::vector<int>{ptr_data_len}, 0, true); // 只在decode attention时使用。
     auto seq_bids = liteqwen::Data(liteqwen::DataType::INT8, std::vector<int>{max_BL}, 0, true);
     pos_starts.Allocate();
     seq_bids.Allocate();
-    pos_offsets.Allocate();
-    batch_kv_ptrs.Allocate();
-
     UploadInt32(pos_starts.cudaData, (uint8_t*)cpu_starts, 0, 0, 0, static_cast<size_t>(dynamic_bsz+1), static_cast<size_t>(max_B+1), true);
-    pos_starts.print(std::string("pos_starts"));
     UploadData(liteqwen::DataType::INT8, seq_bids.cudaData, cpu_bids, 0, 0, 0, max_BL);
-
+    pos_starts.print(std::string("pos_starts"));
     // 写入decode kv
-    kv_cache_ref->write_batch_layer_kv(false, req_ids, layer_id, std::pair<liteqwen::Data*, liteqwen::Data*>(&dummy_k_delta, &dummy_v_delta), pos_offsets, pos_starts, seq_bids, max_B, (prefill_len+1), kv_heads, channels);
+    kv_cache_ref->write_example_kvs_to_cache(false, req_ids.size(), layer_id, std::pair<liteqwen::Data*, liteqwen::Data*>(&dummy_k_delta, &dummy_v_delta), pos_starts, seq_bids, max_B, prefill_len+1, kv_heads, channels);
     DeviceSynchronize();
 
     // 检验增量写入后的全量kv内容(req004)
@@ -577,6 +592,9 @@ void test_decode_attn() {
         }
     }
     kv_cache_ref->sequence_allocate_cache(alloc_params);
+    DeviceSynchronize();
+
+    kv_cache_ref->scatter_example_ptrs(req_ids, layer_id);
 
     // 准备key value数据
     int max_t = 1;
@@ -614,19 +632,14 @@ void test_decode_attn() {
     UploadCastFp32ToFp16Data((void*)value_tensor.cudaData, cpu_values, 0, 0, 0, static_cast<size_t>(bl_bound)*kv_size);
     // prefill kv 写入cache。其实是前一步prefill(t步)+1步decode拼接后的数据一起写入。
     auto pos_starts = liteqwen::Data(liteqwen::DataType::INT32, std::vector<int>{max_batch+1}, 0, true);
-    auto pos_offsets = liteqwen::Data(liteqwen::DataType::INT64, std::vector<int>{2 * max_batch}, 0, true);
-    int ptr_data_len = sizeof(void*) * 2 * max_batch / sizeof(uint8_t); // ptrs = [&k1, &v1, &k2, &v2, ...]
-    auto batch_kv_ptrs = liteqwen::Data(liteqwen::DataType::INT8, std::vector<int>{ptr_data_len}, 0, true); // 只在decode attention时使用。
     auto seq_bids = liteqwen::Data(liteqwen::DataType::INT8, std::vector<int>{max_BL}, 0, true);
     pos_starts.Allocate();
     seq_bids.Allocate();
-    pos_offsets.Allocate();
-    batch_kv_ptrs.Allocate();
 
     UploadInt32(pos_starts.cudaData, (uint8_t*)cpu_starts, 0, 0, 0, static_cast<size_t>(dynamic_bsz+1), static_cast<size_t>(max_batch+1), true);
     pos_starts.print(std::string("pos_starts"));
     UploadData(liteqwen::DataType::INT8, seq_bids.cudaData, cpu_bids, 0, 0, 0, max_BL);
-    kv_cache_ref->write_batch_layer_kv(true, req_ids, layer_id, std::pair<liteqwen::Data*, liteqwen::Data*>(&key_tensor, &value_tensor), pos_offsets, pos_starts, seq_bids, max_batch, bl_bound, kv_heads, 128);
+    kv_cache_ref->write_example_kvs_to_cache(true, req_ids.size(), layer_id, std::pair<liteqwen::Data*, liteqwen::Data*>(&key_tensor, &value_tensor), pos_starts, seq_bids, max_batch, bl_bound, kv_heads, channel);
 
     // 准备单步query
     auto query_cpu = new float[max_batch * query_heads * channel];
@@ -646,8 +659,6 @@ void test_decode_attn() {
     attended_out.Allocate();
     auto scores = liteqwen::Data(liteqwen::DataType::FLOAT32, std::vector<int>{max_BL, query_heads}, 0, true);
     scores.Allocate();
-    // auto bhld_value = liteqwen::Data(liteqwen::DataType::FLOAT16, std::vector<int>{max_batch, query_heads, max_t, channel}, 0, true);
-    // bhld_value.Allocate(0, liteqwen::DataType::FLOAT16, static_cast<size_t>(max_batch)*query_heads*max_BL*channel);
 
     DeviceSynchronize();
 
@@ -655,7 +666,7 @@ void test_decode_attn() {
 
     // method call
     for (int ii=0; ii<10000; ii++) {
-        decode_attention(attended_out, scores, req_ids, bl_bound, max_t, layer_id, query, seq_bids, batch_kv_ptrs, pos_offsets, pos_starts, max_batch, kv_cache_ref, kv_heads, channel, true);
+        decode_attention(attended_out, scores, req_ids, bl_bound, max_t, layer_id, query, seq_bids, pos_starts, max_batch, kv_cache_ref, kv_heads, channel);
         // DeviceSynchronize();
         // scores.print(std::string("scores"));
         // attended_out.print(std::string("attended_out"));

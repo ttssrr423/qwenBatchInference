@@ -148,6 +148,76 @@ __global__ void batch_gqa_decode_score(int block_bound, float* scores, __half* q
     }
 }
 
+
+template <int channel, int grid_bound>
+__global__ void batch_gqa_decode_scoreFp16(int block_bound, __half* scores, __half* query, void** cache_start_ptrs, int dynamic_bsz, uint8_t* bl_batch_ids, int* batch_starts, int query_heads, int kv_heads, int batch_maxt, float dim_sqrt) {
+    // dimGrid(dynamic_bl * H_q), dimBlock(128)
+    // channel = dimBlock = 128
+    // if block_bound > grid_bound, loop process all the blocks, else only a single loop run.
+
+    __shared__ __half sdata[channel];
+    __shared__ int sbatch_starts[2]; // position_start, position_end
+    __shared__ __half* sbatch_kv_ptrs[2]; // &key[0] and &value[0]
+    int tid = threadIdx.x;
+
+    for (int blkid=blockIdx.x; blkid<block_bound; blkid +=grid_bound) {
+        int bl_id = blkid / query_heads;
+        int q_head_id = blkid % query_heads;
+        int head_num_ratio = query_heads / kv_heads;
+        int kv_head_id = q_head_id / head_num_ratio;
+        int batch_id = static_cast<int>(bl_batch_ids[bl_id]); // bounded by dynamic_bsz
+
+        // starts缓存加速。
+        if (tid < 2) {
+            sbatch_starts[tid] = batch_starts[batch_id + tid];
+            sbatch_kv_ptrs[tid] = reinterpret_cast<__half*>(cache_start_ptrs[batch_id*2+tid]);
+        }
+
+        sdata[tid] = __float2half(0.0f);
+        __syncthreads();
+
+        int end_pos = sbatch_starts[1];
+        int start_pos = sbatch_starts[0];
+        if (bl_id >= end_pos || end_pos == 0) { // length bound by batch_starts[dynamic_bsz]
+            return;
+        }
+
+        // int data_len = end_pos - start_pos;
+        int step_id = bl_id - start_pos;
+        // if (step_id < 0 && tid == 0) {
+        //     printf("KERNEL ERROR: bl_id(%i)=(blkid(%i) / H) looking up bl_batch_ids to get batch_id=%i, getting batch_starts[batch_id]=start=%i should be less than batch_starts[batch_id+1]=end(%i), something wrong with data prepare.\n", bl_id, blkid, batch_id, start_pos, end_pos);
+        // }
+
+        __half* key_data_start = sbatch_kv_ptrs[0]; // batch_id的t=0的key-cache指针。time stride = H_kv * D
+        // __half* value_data_start = sbatch_kv_ptrs[1]; // batch_id的t=0的val-cache指针。time stride = H_kv * D
+
+        int kv_read_shift = (bl_id - start_pos) * channel * kv_heads + kv_head_id * channel + tid;
+        int q_read_shift = batch_id * channel * query_heads + q_head_id * channel + tid;
+        
+        __half prod = key_data_start[kv_read_shift] * query[q_read_shift];
+        sdata[tid] = prod;
+        __syncthreads();
+
+        // if (tid == 0) {
+        //     printf("bid=%i, q_head_id=%i, step_id=bl_id(%i)-start(%i)=%i(max=%i), chn=0, q_read_shift=%i, kv_read_shift=%i\n", batch_id, q_head_id, bl_id, start_pos, step_id, batch_maxt, q_read_shift, kv_read_shift);
+        // }
+
+        for (int pow=channel/2; pow>0; pow>>=1){
+            if (tid<pow) {
+                sdata[tid] = sdata[tid] + sdata[tid+pow];
+            }
+            __syncthreads();
+        }
+        
+        if (tid==0) {
+            // int out_score_shift = batch_id * query_heads * batch_maxt + q_head_id * batch_maxt + step_id; // [B, H, 1, batch_maxt]
+            int out_score_shift = blkid; // [BL, H]
+            __half score = (sdata[0] / __float2half(dim_sqrt));
+            scores[out_score_shift] = score;
+        }
+    }
+}
+
 template<int steps_per_fold, int channel, int block_size, int block_channel_ratio>
 __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** cache_start_ptrs, int* batch_starts, int query_heads, int kv_heads) {
     // dimGrid(dynamic_bsz * H_q), dimBlock(block_size). steps_per_fold根据batch_maxt计算，因为最慢计算一般出现在最长的example上。
@@ -170,7 +240,7 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
     int head_id = blockIdx.x % query_heads;
     int head_num_ratio = query_heads / kv_heads;
     int kv_head_id = head_id / head_num_ratio;
-    
+
     // if (head_id != kv_head_id) {
     //     printf("warning: attn head_id should == kv_head_id, ratio=%i\n", head_num_ratio);
     // }
@@ -207,6 +277,14 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
         float original_score;
         if (before_end) {
             original_score = scores[(patch_left + tid) * query_heads + head_id];
+            // if (tid == 0 && head_id == 0 && patch_left == 0) {
+            //     printf("[");
+            //     for (int ii=sbatch_starts[0]; ii < sbatch_starts[1]; ii++) {
+            //         float tmp_score = scores[(patch_left + ii) * query_heads + head_id];
+            //         printf("%f,", tmp_score);
+            //     }
+            //     printf("]\n");
+            // }
         } else {
             original_score = -8192.0f;
         }
@@ -234,7 +312,11 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
         // 2. 计算patch partition， (sdata = local_partition_reducer)
         float local_exp_score = exp(original_score - m);
         if (tid < steps_per_fold) {
-            sdata[tid] = local_exp_score;
+            if (before_end) {
+                sdata[tid] = local_exp_score;
+            } else {
+                sdata[tid] = 0.0f;
+            }
         }
         __syncthreads();
         for (int pow=steps_per_fold/2; pow>0; pow>>=1){
@@ -243,18 +325,22 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
             }
             __syncthreads();
         }
-        
+        __syncthreads();
         // 3. 更新rescale factor以及截至当前的Z
         if (tid == 0) {
             rescale_factor = exp(prev_m - m);
-            // if (head_id == 0) {
+            // if (head_id == 0 && patch_left > sbatch_starts[0]) {
             //     printf("batch=%i, head=%i, patch=[%i, %i), end=%i, prev_partition=%f, rescale_factor=%f, local_partition=%f, \n", batch_id, head_id, patch_left, patch_left+steps_per_fold, sbatch_starts[1], l, rescale_factor, sdata[0]);
             // }
             l = l * rescale_factor + sdata[0];
         }
 
         if (tid < steps_per_fold) {
-            sdata[tid] = local_exp_score;
+            if (before_end) {
+                sdata[tid] = local_exp_score;
+            } else {
+                sdata[tid] = 0.0f;
+            }
         }
         __syncthreads();
 
@@ -309,6 +395,192 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
         //     printf("o[%lu]=%f/%f\n", (batch_id * hidden_size) + head_id * channel + chn_i, prev_o[chn_i], l);
         // }
         outs[(batch_id * hidden_size) + head_id * channel + chn_i] = __float2half(prev_o[chn_i] / l);
+    }
+}
+
+
+template<int steps_per_fold, int channel, int block_size, int block_channel_ratio>
+__global__ void SoftmaxFuseDecodeAttnKernelFp16(__half* outs, __half* scores, void** cache_start_ptrs, int* batch_starts, int query_heads, int kv_heads) {
+    // dimGrid(dynamic_bsz * H_q), dimBlock(block_size). steps_per_fold根据batch_maxt计算，因为最慢计算一般出现在最长的example上。
+    // block_size >= steps_per_fold, block_size > channel
+    // out_parallel_num = max(channel, step_per_fold), small_block=True if step_per_fold < channel
+    __shared__ __half sdata[steps_per_fold];
+    __shared__ __half out_accu[block_size];
+    __shared__ __half prev_o[channel];
+
+    __shared__ __half m; // 截至当前patch的max_score
+    __shared__ __half l; // 截至当前patch的Z累计
+    __shared__ int sbatch_starts[2]; // position_start, position_end
+    __shared__ __half* sbatch_kv_ptrs[2]; // &key[0] and &value[0]
+
+    __shared__ __half rescale_factor;
+    __shared__ __half prev_m;
+
+    int tid = threadIdx.x;
+    int batch_id = blockIdx.x / query_heads;
+    int head_id = blockIdx.x % query_heads;
+    int head_num_ratio = query_heads / kv_heads;
+    int kv_head_id = head_id / head_num_ratio;
+
+    // if (head_id != kv_head_id) {
+    //     printf("warning: attn head_id should == kv_head_id, ratio=%i\n", head_num_ratio);
+    // }
+    unsigned long hidden_size = static_cast<unsigned long>(channel) * query_heads;
+    unsigned long cache_size = static_cast<unsigned long>(channel) * kv_heads;
+    int out_accu_t_offset = tid / channel;
+    int out_accu_chn_id = tid % channel;
+
+    __half hzero = __float2half(0.0f);
+    __half hpad = __float2half(-8192.0f);
+
+    // starts缓存加速。
+    if (tid < 2) {
+        sbatch_starts[tid] = batch_starts[batch_id + tid];
+        sbatch_kv_ptrs[tid] = reinterpret_cast<__half*>(cache_start_ptrs[batch_id*2+tid]);
+    }
+    if (tid == 0) {
+        m = hpad;
+        l = hzero;
+        prev_m = hzero;
+    }
+
+    if (tid < steps_per_fold) {
+        sdata[tid] = hzero;
+    }
+    for (int chn_id=tid; chn_id<channel; chn_id += block_size) {
+        prev_o[chn_id] = hzero;
+    }
+    __syncthreads();
+
+    for (int patch_left=sbatch_starts[0]; patch_left < sbatch_starts[1]; patch_left+=steps_per_fold) {
+        // 每个example的长度右边界判定，以及屏蔽过剩线程tid。
+        bool before_end = (patch_left + tid < sbatch_starts[1]) && (tid < steps_per_fold); 
+        int step_id = patch_left + tid - sbatch_starts[0];
+
+        // 1. 计算patch max score
+        __half original_score;
+        if (before_end) {
+            original_score = scores[(patch_left + tid) * query_heads + head_id];
+            // if (tid == 0 && head_id == 0 && patch_left == 0) {
+            //     printf("[");
+            //     for (int ii=sbatch_starts[0]; ii < sbatch_starts[1]; ii++) {
+            //         float tmp_score = scores[(patch_left + ii) * query_heads + head_id];
+            //         printf("%f,", tmp_score);
+            //     }
+            //     printf("]\n");
+            // }
+        } else {
+            original_score = hpad;
+        }
+        if (tid < steps_per_fold) {
+            sdata[tid] = original_score;
+        }
+
+        __syncthreads();
+        for (int pow=steps_per_fold/2; pow>0; pow>>=1){
+            if (tid < pow && before_end){
+                if (sdata[tid] < sdata[tid+pow]) {
+                    sdata[tid] = sdata[tid+pow];
+                }
+            }
+            __syncthreads();
+        }
+        if (tid==0){
+            if (sdata[0] > m) {
+                m = sdata[0];
+            }
+            // if (head_id == 0) {
+            //     printf("batch=%i, head=%i, patch=[%i, %i), end=%i, max=max(sdata0=%f, m=%f)\n", batch_id, head_id, patch_left, patch_left+steps_per_fold, sbatch_starts[1], sdata[0], m);
+            // }
+        }
+        __syncthreads();
+
+        // 2. 计算patch partition， (sdata = local_partition_reducer)
+        __half local_exp_score = hexp(original_score - m);
+        if (tid < steps_per_fold) {
+            if (before_end) {
+                sdata[tid] = local_exp_score;
+            } else {
+                sdata[tid] = hzero;
+            }
+        }
+        __syncthreads();
+        for (int pow=steps_per_fold/2; pow>0; pow>>=1){
+            if (tid<pow && before_end) {
+                sdata[tid] = sdata[tid] + sdata[tid+pow];
+            }
+            __syncthreads();
+        }
+        __syncthreads();
+        // 3. 更新rescale factor以及截至当前的Z
+        if (tid == 0) {
+            rescale_factor = hexp(prev_m - m);
+            // if (head_id == 0 && patch_left > sbatch_starts[0]) {
+            //     printf("batch=%i, head=%i, patch=[%i, %i), end=%i, prev_partition=%f, rescale_factor=%f, local_partition=%f, \n", batch_id, head_id, patch_left, patch_left+steps_per_fold, sbatch_starts[1], l, rescale_factor, sdata[0]);
+            // }
+            l = l * rescale_factor + sdata[0];
+        }
+
+        if (tid < steps_per_fold) {
+            if (before_end) {
+                sdata[tid] = local_exp_score;
+            } else {
+                sdata[tid] = hzero;
+            }
+        }
+        __syncthreads();
+
+        // 4. prev_o根据当前patch的rescale factor进行更新
+        for (int chn_id = tid; chn_id < channel; chn_id += block_size) {
+            prev_o[chn_id] = prev_o[chn_id] * rescale_factor;
+        }
+        __syncthreads();
+
+        // 5. 计算当前patch内的matmul: score[1, steps_per_fold] @ values[steps_per_fold, channel] using parallel_num=steps_per_fold
+        // 之后累加当前的o到prev_o. (sdata = local_exp_score)
+        // 这一步开放全部threads运算，不再限制 tid < steps_per_fold
+        int valid_length = sbatch_starts[1] - patch_left;
+        int patch_start_step = patch_left - sbatch_starts[0];
+        if (valid_length > 0) {
+            __half* value_data_start = sbatch_kv_ptrs[1]; // [L, H, channel]
+            int task_len = valid_length < steps_per_fold ? valid_length : steps_per_fold;
+            
+            // // if (tid == 0) {
+            // //     __half value_read0 = value_data_start[cache_size * 0 + kv_head_id * channel];
+            // //     __half value_read_last = value_data_start[cache_size * (task_len-1) + kv_head_id * channel + channel-1];
+            // //     printf("final matmul patch: [b=%i, hq=%i, hk=%i], patch=[%i, %i), end=%i, task_len=%i, value[0]=%f, value[-1]=%f\n", batch_id, head_id, kv_head_id, patch_left, patch_left+steps_per_fold, sbatch_starts[1], task_len, __half2float(value_read0), __half2float(value_read_last));
+            // // }
+
+            __half accumulator = hzero;
+            // 间隔dt=4累加，每个block处理 512=128(channel)* 4(step)个数据。
+            for (int t=out_accu_t_offset; t<task_len; t+=block_channel_ratio) {
+                int step_id = patch_start_step + t;
+                __half value_read = value_data_start[(cache_size * step_id) + kv_head_id * channel + out_accu_chn_id];
+                accumulator += (sdata[t] * value_read);
+            }
+            // out_accu 存储数据是 [block_channel_ratio, channel], 需要在block_channel_ratio维度上继续reduce_sum
+            out_accu[tid] = accumulator; 
+            __syncthreads();
+            if (tid < channel) {
+                __half accumulator2 = hzero;
+                for (int i=0; i<block_channel_ratio; i++) {
+                    accumulator2 += out_accu[i * channel + tid];
+                }
+                prev_o[tid] = prev_o[tid] + accumulator2;
+            }
+        }
+        __syncthreads();
+
+        if (tid==0) {
+            prev_m = m;
+        }
+    }
+    
+    for (int chn_i=tid; chn_i<channel; chn_i+=block_size) {
+        // if (tid==0 && head_id == 0) {
+        //     printf("o[%lu]=%f/%f\n", (batch_id * hidden_size) + head_id * channel + chn_i, prev_o[chn_i], l);
+        // }
+        outs[(batch_id * hidden_size) + head_id * channel + chn_i] = prev_o[chn_i] / l;
     }
 }
 
@@ -638,11 +910,9 @@ std::pair<int, int> get_reduce_partitions(int channel) {
 }
 
 
-void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& scores, liteqwen::StringArray input_request_ids, int bl_bound, int batch_maxt, int layer_id, const liteqwen::Data& query, const liteqwen::Data& bl_batch_ids, const liteqwen::Data& cache_start_ptrs, const liteqwen::Data& cache_start_offsets, const liteqwen::Data& start_positions, int max_dynamic_bsz, liteqwen::PipelineKVPool* kv_cache_ref, int kv_heads, int channel, bool cache_ptr_loaded) {
+void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& scores, liteqwen::StringArray input_request_ids, int bl_bound, int batch_maxt, int layer_id, const liteqwen::Data& query, const liteqwen::Data& bl_batch_ids, const liteqwen::Data& start_positions, int max_dynamic_bsz, liteqwen::PipelineKVPool* kv_cache_ref, int kv_heads, int channel) {
     // attended_out, query: [B, H*D], 有效输出只有[dynamic_bsz, 1, H, D]. B = max_dynamic_bsz, 真实dynamic_bsz=len(input_request_ids)<=B
     // scores: 预分配shape=[max_BL, H], 不会全部被使用, 只使用紧凑排列的bl部分。
-    // bl_batch_ids: [BL], dtype=uint8, 存储每个动态bl位置对应的batch_id
-    // cache_start_ptrs: [2* sizeof(void*) * B / sizeof(uint8_t)], dtype=uint8_t。存储2*bsz个__half*（强转void*后），[k1_ptr, v1_ptr, k2_ptr, v2_ptr, ...]
     // start_positions: [B+1], dtype=int32, 动态batch拼接后的张量（attended_out）的紧凑排布位置，从pos=0开始。详细见BatchInputPreparer::BatchUpdate方法。
 
     int dynamic_bsz = (int)(input_request_ids.size());
@@ -652,15 +922,16 @@ void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& 
     }
     float dim_sqrt = sqrt(128.0f);
 
-    // 根据input_request_ids内存在的request_id，找到kv-cache内每个样本在对应layer上的__half*初始位置，以void**形式传入cache_start_ptrs。
-    kv_cache_ref->read_batch_kv_ref(input_request_ids, layer_id, cache_start_ptrs, cache_start_offsets, max_dynamic_bsz, 0, cache_ptr_loaded);
+    // 浅克隆+根据layer_id移动的contiguous数据。
+    liteqwen::Data cache_start_ptrs = kv_cache_ref->get_layer_example_ptrs(layer_id);
 
     int query_heads = scores.shape[1];
     int block_num = query_heads * bl_bound;
     const int grid_bound = 12288;
     const int min_block_size = 32;
 
-    float* score_data = (float*)scores.cudaData;
+    // float* score_data = (float*)scores.cudaData;
+    __half* score_data = (__half*)scores.cudaData;
     // __half* bhld_value_data = (__half*)bhld_value.cudaData;
     __half* query_data = (__half*) query.cudaData;
     void** cache_ptr_data = (void**)cache_start_ptrs.cudaData;
@@ -671,11 +942,11 @@ void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& 
     if (block_num > grid_bound) {
         dim3 dimGrid(grid_bound);
         dim3 dimBlock(128);
-        batch_gqa_decode_score<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);
+        batch_gqa_decode_scoreFp16<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);
     } else {
         dim3 dimGrid(block_num);
         dim3 dimBlock(128);
-        batch_gqa_decode_score<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);     
+        batch_gqa_decode_scoreFp16<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);     
     }
     // scores.const_print(std::string("scores"));
 
@@ -690,38 +961,29 @@ void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& 
     // printf("batch_maxt=%i -> (powers=%i, folds=%i). dynamic_bsz=%i\n", batch_maxt, powers, folds, dynamic_bsz);
     // 使用flash_attention的方式融合了softmax以及matmul(prob, values)
     if (powers <= min_block_size) { // 32
-        SoftmaxFuseDecodeAttnKernel<min_block_size, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernelFp16<min_block_size, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else if (powers <= min_block_size*2) { // 64
-        SoftmaxFuseDecodeAttnKernel<min_block_size*2, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*2, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else if (powers <= min_block_size*4) { //128
-        SoftmaxFuseDecodeAttnKernel<min_block_size*4, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*4, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else if (powers <= min_block_size*8) { // 256
-        SoftmaxFuseDecodeAttnKernel<min_block_size*8, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*8, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else { //512
-        SoftmaxFuseDecodeAttnKernel<min_block_size*16, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*16, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     }
 }
 
 
-void cpu_embedding_fwd(int gpu_id, const liteqwen::Data& out_tensor,  const liteqwen::Data& input_ids, const liteqwen::Data& embedding_weights, int input_offset, int lookup_len, int channel) {
-
-    int* cpu_input_ids = new int[lookup_len];
+void cpu_embedding_fwd(int gpu_id, const liteqwen::Data& out_tensor, int* cpu_input_ids, const liteqwen::Data& embedding_weights, int input_offset, int lookup_len, int channel) {
+    // printf("forwarding embedding, lookup_len=%i, hidden_size=%i\n", lookup_len, channel);
     size_t full_size = lookup_len * channel;
-    __half* cpu_embeddings = new __half[full_size];
-    uint8_t* dst_data = reinterpret_cast<uint8_t*>(cpu_input_ids);
-    uint8_t* src_data = reinterpret_cast<uint8_t*>(input_ids.cudaData);
+    // __half* cpu_embeddings = new __half[full_size];
     __half* gpu_write_data = reinterpret_cast<__half*>(out_tensor.cudaData);
-    size_t uint8_src_offset = static_cast<size_t>(input_offset) * 4;
-    size_t tmp_gpu_size = lookup_len * 4;
-    cudaMemcpy(dst_data, (src_data+uint8_src_offset), tmp_gpu_size, cudaMemcpyDeviceToHost);
+    uint8_t* cpu_embeddings = liteqwen::cpu_embedding_copy((uint8_t*)embedding_weights.cpuData, cpu_input_ids, lookup_len, channel);
     DeviceSynchronize();
-
-    liteqwen::cpu_embedding_copy((uint8_t*)cpu_embeddings, (uint8_t*)embedding_weights.cpuData, cpu_input_ids, lookup_len, channel);
-    DeviceSynchronize();
-    cudaMemcpy(gpu_write_data, cpu_embeddings, lookup_len*channel*sizeof(__half), cudaMemcpyHostToDevice);
-    DeviceSynchronize();
-    delete cpu_input_ids;
-    delete cpu_embeddings;
+    cudaMemcpy(gpu_write_data, (__half*)cpu_embeddings, lookup_len*channel*sizeof(__half), cudaMemcpyHostToDevice);
+    // DeviceSynchronize();
+    // delete cpu_embeddings;
 }
 
 void rotary_lookup(bool is_prefill, int gpu_id, const liteqwen::Data& out_cos, const liteqwen::Data& out_sin, const liteqwen::Data& batch_bids, const liteqwen::Data& batch_starts, const liteqwen::Data& cos_gpu, const liteqwen::Data& sin_gpu, int input_offset, int lookup_len, int channel, int dynamic_bsz) {

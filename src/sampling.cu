@@ -5,40 +5,46 @@ static std::shared_ptr<std::map<int, curandState*>> HandleRandStateMap = nullptr
 
 __global__ void setup_rand_kernel(curandState* state, int* seeds, int boundary)
 {
-    int id = threadIdx.x + blockIdx.x * blockDim.x;
-    /* Each thread gets same seed, a different sequence
-       number, no offset */
+    unsigned long long id = threadIdx.x + blockIdx.x * blockDim.x;
     if (id < boundary) {
-        curand_init(seeds[id], id, 0, &state[id]);
+        // sequence start = id * 32768, sequence_start + offset = sampling index from length 2^130. Every distinct seed produces such a sequence.
+        unsigned long long offset = 0;
+        curand_init(static_cast<unsigned long long>(seeds[id]), id*32768, offset, &state[id]);
     }
 }
 
-__global__ void invalidFilterWithTemperatureKerkenl(__half* logits, float* temperatures, int vocab_size, int boundary, int eos_id) {
+__global__ void invalidFilterWithTemperatureKerkenl(float* logits_out, __half* logits, float* temperatures, int vocab_size, int boundary, int eos_id) {
     int id = threadIdx.x + blockIdx.x * blockDim.x;
     int batch_id = id / vocab_size;
     if (id<boundary) {
         __half original_val = logits[id];
-        __half temp = __float2half(temperatures[batch_id]);
+        float temp = temperatures[batch_id];
         if (!(__hisnan(original_val) || __hisinf(original_val))) {
-            __half new_lgt = original_val / temp;
-            if (!(__hisnan(new_lgt) || __hisinf(new_lgt))) {
-                if (eos_id>=0 && id==eos_id) {
-                    logits[id] = __float2half(-4096.0f);
-                } else {
-                    logits[id] = new_lgt;
-                }
-            } else {
-                // printf("valid%f|", __half2float(new_lgt));
-                logits[id] = __float2half(-4096.0f);
-            }
+            float new_lgt = __half2float(original_val) / temp;
+            // if (!(__hisnan(new_lgt) || __hisinf(new_lgt))) {
+            //     if (eos_id>=0 && id==eos_id) {
+            //         logits[id] = __float2half(-4096.0f);
+            //     } else {
+            //         logits[id] = new_lgt;
+            //     }
+            // } else {
+            //     // printf("valid%f|", __half2float(new_lgt));
+            //     logits[id] = __float2half(-4096.0f);
+            // }
+            logits_out[id] = new_lgt;
         } else {
             // printf("invalid%f|", __half2float(original_val));
-            logits[id] = __float2half(-4096.0f);
+            // 原始logits溢出，非eos置零，eos直接最大。
+            if (id != eos_id) {
+                logits_out[id] = -65536.0f;
+            } else {
+                logits_out[id] = 65536.0f;
+            }
         }
     }
 }
 
-__device__  void insert_value(__half* array, int* indices, int k, __half data, int pos)
+__device__  void insert_value(float* array, int* indices, int k, float data, int pos)
 {
     for(int i=0; i<k; i++)
     {
@@ -72,11 +78,11 @@ __device__  void insert_value(__half* array, int* indices, int k, __half data, i
 }
 
 template<int grid_size_per_example, int block_size, int topk>
-__global__ void gpu_topk_first_pass(__half*input, __half*output, int* out_indices, int length)
+__global__ void gpu_topk_first_pass(float* input, float* output, int* out_indices, int length)
 {
-    __shared__ __half ken[block_size * topk];
+    __shared__ float ken[block_size * topk];
     __shared__ int kid[block_size * topk];
-    __half top_array[topk];
+    float top_array[topk];
     int top_indices[topk];
 
     int batch_id = blockIdx.x / grid_size_per_example;
@@ -136,13 +142,13 @@ __global__ void gpu_topk_first_pass(__half*input, __half*output, int* out_indice
 }
 
 template<int block_size, int topk>
-__global__ void gpu_topk(half*input, int* input_idx, half*output, int* out_indices, int length, int k)
+__global__ void gpu_topk(float*input, int* input_idx, float*output, int* out_indices, int length, int k)
 {
     // <<<bsz, block_size>>>
     // input.shape = [bsz, topk, block_size], length=topk*block_size
-    __shared__ __half ken[block_size * topk];
+    __shared__ float ken[block_size * topk];
     __shared__ int kid[block_size * topk];
-    __half top_array[topk];
+    float top_array[topk];
     int top_indices[topk];
 
     int batch_id = blockIdx.x;
@@ -197,7 +203,7 @@ __global__ void gpu_topk(half*input, int* input_idx, half*output, int* out_indic
                 if (i < k) {
                     output[example_shift + topk * blkid + i] = ken[i];
                 } else {
-                    output[example_shift + topk * blkid + i] = __float2half(-4096.0f); // mask for probability
+                    output[example_shift + topk * blkid + i] = -65536.0f; // __float2half(-4096.0f); // mask for probability
                 }
                 out_indices[example_shift + topk * blkid + i] = kid[i];
             }
@@ -224,6 +230,24 @@ __global__ void SampleKernel(int* sampled_id, __half* probs, int* vocab_indices,
     }
 }
 
+__global__ void SampleKernelFp32(int* sampled_id, float* probs, int* vocab_indices, int cols, curandState* states, float* top_p, int topk) {
+    int batch_id = blockIdx.x;
+    curandState localState = states[batch_id];
+    float x = curand_uniform(&localState);
+    float hx = x * top_p[batch_id];
+    states[batch_id] = localState;
+
+    float sample_acc = 0.0;
+    float threshold = 1.0f;
+    for (int _k=0; _k<cols; _k++) {
+        sample_acc += probs[batch_id * topk + _k];
+        if (sample_acc > hx && sample_acc <= threshold) {
+            // printf("sampled item: %i, %i\n", _k, vocab_indices[_k]);
+            sampled_id[batch_id] = vocab_indices[batch_id * topk + _k];
+            sample_acc += 10.0f;
+        }
+    }
+}
 
 template <int powers>
 __global__ void SoftmaxKernelAct16(__half* out, __half* in, int rows, int padded_cols, int cols, int folds)
@@ -340,6 +364,120 @@ __global__ void SoftmaxKernelAct16(__half* out, __half* in, int rows, int padded
 }
 
 
+template <int powers>
+__global__ void SoftmaxKernelAct32(float* out, float* in, int rows, int padded_cols, int cols, int folds)
+{
+    __shared__ float sdata[powers];
+    __shared__ float maxV;
+
+    int tid = threadIdx.x;
+    int row_id = blockIdx.x;
+
+    float max_val = -65536.0f;
+
+    for (int fi=folds-1; fi>=0; fi-=1) {
+        int block_pos = tid + (row_id * folds + fi) * blockDim.x;
+        int block_col = block_pos % padded_cols;
+        int source_pos;
+        if (block_col < cols)
+        {
+            source_pos = (block_pos / padded_cols) * cols + block_col;
+        }
+        else
+        {
+            source_pos = -1;
+        }
+        // printf("row_i=%d, fold_i=%d, abs_pos=%d(%d,%d)<-%d(%d,%d)\n", row_id, fi, block_pos, threadIdx.x, blockIdx.x, source_pos, inp_col, inp_row); //rm
+        if (source_pos >= 0) {
+            // max_val = __hmax(max_val, in[source_pos]);
+            float in_source_val = in[source_pos];
+            if (max_val < in_source_val) {
+                max_val = in_source_val;
+            }
+        }
+    }
+    
+    sdata[tid] = max_val;
+    __syncthreads();
+
+    for (int pow=powers/2; pow>0; pow>>=1){
+        if (tid < pow){
+            // sdata[tid] = __hmax(sdata[tid], sdata[tid+pow]);
+            if (sdata[tid] < sdata[tid+pow]) {
+                sdata[tid] = sdata[tid+pow];
+            }
+        }
+        __syncthreads();
+    }
+
+    if (tid==0){
+        maxV = sdata[0];
+        // printf("max sdata0=%f\n", __half2float(sdata[0]));
+    }
+    __syncthreads();
+
+    float sum = 0.0f;
+    for (int fi=folds-1; fi>=0; fi-=1) {
+        int block_pos = threadIdx.x + (row_id * folds + fi) * blockDim.x;
+        int block_col = block_pos % padded_cols;
+        int source_pos;
+        if (block_col < cols) {
+            source_pos = (block_pos / padded_cols) * cols + block_col;
+        } else {
+            source_pos = -1;
+        }
+        if (source_pos >= 0){
+            float shifted = exp(in[source_pos]-maxV);
+            out[source_pos] = shifted;
+            sum = sum + shifted;
+        }
+    }
+    sdata[tid] = sum;
+    __syncthreads();
+
+    for (int pow=powers/2; pow>0; pow>>=1){
+        if (tid < pow){
+            sdata[tid] = sdata[tid] + sdata[tid+pow];
+        }
+        __syncthreads();
+    }
+
+    // div by 0 processing
+    bool using_epsilon = false;
+    if (tid == 0) {
+        float epsilon = 1e-8;
+        if (abs(sdata[0]) < epsilon){
+            // printf("replacing sum as epsilon ");
+            sdata[0] = (float)cols * epsilon;
+            using_epsilon = true;
+        }
+        // printf("sum sdata0=%f\n", __half2float(sdata[0]));
+    }
+    __syncthreads();
+
+    for (int fi=folds-1; fi>=0; fi-=1) {
+        int block_pos = threadIdx.x + (row_id * folds + fi) * blockDim.x;
+        int block_col = block_pos % padded_cols;
+        int source_pos;
+        if (block_col < cols) {
+            source_pos = (block_pos / padded_cols) * cols + block_col;
+        } else {
+            source_pos = -1;
+        }
+
+        if (source_pos >= 0) {
+            if (using_epsilon) {
+                float epsilon = 1e-8;
+                out[source_pos] = (out[source_pos] + epsilon) / sdata[0];
+            } else {
+                out[source_pos] /= sdata[0];
+            }
+        }
+    }
+
+    __syncthreads();
+}
+
 curandState* get_gpu_curand_state(int gpu_id, int world_size, int handle_id) {
     if (gpu_id >= -1) {
         SetDevice(gpu_id);
@@ -429,13 +567,14 @@ void gpu_curand_init(int gpu_id, int world_size, int data_size, int handle_id, c
 }
 
 
-void filterInvalidApplyTemperature(const liteqwen::Data& logits, const liteqwen::Data& temperature_tensor, int vocab_size, int dynamic_bsz, int masking_eos_id) {
+void filterInvalidApplyTemperature(const liteqwen::Data& logitsFp32, const liteqwen::Data& logits, const liteqwen::Data& temperature_tensor, int vocab_size, int dynamic_bsz, int masking_eos_id) {
 
     __half* logits_data = (__half*)(logits.cudaData);
+    float* logits_dataFp32 = (float*)(logitsFp32.cudaData);
     float* temp_data = (float*)(temperature_tensor.cudaData);
     dim3 dimBlock(BLOCK_SIZE);
     dim3 dimGrid((int)(ceil((float)(vocab_size * dynamic_bsz) / BLOCK_SIZE)));
-    invalidFilterWithTemperatureKerkenl<<<dimGrid, dimBlock>>>(logits_data, temp_data, vocab_size, dynamic_bsz*vocab_size, masking_eos_id);
+    invalidFilterWithTemperatureKerkenl<<<dimGrid, dimBlock>>>(logits_dataFp32, logits_data, temp_data, vocab_size, dynamic_bsz*vocab_size, masking_eos_id);
 }
 
 void topk_sampling(const liteqwen::Data& out_id, int gpu_id, int world_size, int handle_id, const liteqwen::Data& logits, int channel, int top_k, const liteqwen::Data& top_p, const liteqwen::Data& _1_pass_result, const liteqwen::Data& _1_psss_indices, const liteqwen::Data& gpu_top_logits, const liteqwen::Data& gpu_top_indices, const liteqwen::Data& sample_softmax_out, int dynamic_bsz) {
@@ -446,29 +585,29 @@ void topk_sampling(const liteqwen::Data& out_id, int gpu_id, int world_size, int
         printf("top k != 32 which is not default setup.\n");
     }
 
-    __half* logits_data = (__half*)(logits.cudaData);
+    float* logits_data = (float*)(logits.cudaData);
     int* sampled_id = (int*)(out_id.cudaData);
 
     const int grid_size_per_example = 32;
     int grid_size = grid_size_per_example * dynamic_bsz;
     const int block_size = 32;
 
-    __half* _1_pass_result_data = (__half*)(_1_pass_result.cudaData);
+    float* _1_pass_result_data = (float*)(_1_pass_result.cudaData);
     int* _1_pass_indices_data = (int*)(_1_psss_indices.cudaData);
-    __half* gpu_result_data = (__half*)(gpu_top_logits.cudaData);
+    float* gpu_result_data = (float*)(gpu_top_logits.cudaData);
     int* gpu_indices_data = (int*)(gpu_top_indices.cudaData);
-    __half* softmax_out_data = (__half*)(sample_softmax_out.cudaData);
+    float* softmax_out_data = (float*)(sample_softmax_out.cudaData);
 
     gpu_topk_first_pass<grid_size_per_example, block_size, 32><<<grid_size, block_size>>>(logits_data, _1_pass_result_data, _1_pass_indices_data, channel);
 
     gpu_topk<block_size, 32><<<dynamic_bsz, block_size>>>(_1_pass_result_data, _1_pass_indices_data, gpu_result_data, gpu_indices_data, top_k * grid_size_per_example, top_k);
 
     // rows=dynamic_bsz, padded_cols=32, cols=32, folds=1
-    SoftmaxKernelAct16<32><<<dynamic_bsz, 32>>>(softmax_out_data, gpu_result_data, dynamic_bsz, 32, top_k, 1);
+    SoftmaxKernelAct32<32><<<dynamic_bsz, 32>>>(softmax_out_data, gpu_result_data, dynamic_bsz, 32, top_k, 1);
 
     curandState* sampling_state = get_gpu_curand_state(gpu_id, world_size, handle_id);
     float* top_p_data = (float*)top_p.cudaData;
-    SampleKernel<<<dynamic_bsz, 1>>>(sampled_id, softmax_out_data, gpu_indices_data, top_k, sampling_state, top_p_data, top_k);
+    SampleKernelFp32<<<dynamic_bsz, 1>>>(sampled_id, softmax_out_data, gpu_indices_data, top_k, sampling_state, top_p_data, top_k);
 }
 
 liteqwen::BatchGeneratedRes download_sampled(const liteqwen::Data& sampled_id, int* cpu_sampled_id, int* eos_ids, int eos_num, int batch_size) {

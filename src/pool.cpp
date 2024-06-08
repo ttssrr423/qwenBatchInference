@@ -10,7 +10,7 @@ namespace liteqwen {
 std::string BatchInputPreparer::GetLoraName() {
     if (this->all_eos) {
         this->batch_lora_name = std::string("ANY");
-        return this->batch_lora_name;
+        return std::string("ANY");
     } else {
         return this->batch_lora_name;
     }
@@ -218,7 +218,7 @@ void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std:
         if (new_req_id.length() == 0) {
             continue;
         }
-        
+
         ResponseContext* double_check_ctx = pool->GetRes(new_req_id);
         if (double_check_ctx == nullptr) {
             printf("UPDATE_DECODE: nullptr context trying to update&append prefill token for %s, possibly due to eos or timeout, skip.\n", new_req_id.c_str());
@@ -373,7 +373,7 @@ void BatchInputPreparer::UploadInputs(bool is_prefill, int inp_gpu_id, int out_g
         int dynamic_bsz = this->prefill_bsz;
         int dynamic_bl = (int)(this->prefill_inp_ids.size());
         // printf("uploading prefills: dynamic_bl=%i, dynamic_bsz=%i, prefill_inp_ids[bl-1]=%i, starts[bsz]=%i\n", dynamic_bl, dynamic_bsz, this->prefill_inp_ids[dynamic_bl-1], this->prefill_starts[dynamic_bsz]);
-        QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)(this->prefill_inp_ids.data()), inp_gpu_id, 0, 0, dynamic_bl);
+        // QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)(this->prefill_inp_ids.data()), inp_gpu_id, 0, 0, dynamic_bl);
         QuickUploadData(DataType::INT8, (void*)inp_batch_ids.cudaData, (uint8_t*)(this->prefill_bids.data()), inp_gpu_id, 0, 0, dynamic_bl);
         QuickUploadData(DataType::INT32, (void*)query_pos_starts.cudaData, (uint8_t*)(this->prefill_starts.data()), inp_gpu_id, 0, 0, dynamic_bsz+1);
         QuickUploadData(DataType::INT32, (void*)key_pos_starts.cudaData, (uint8_t*)(this->prefill_starts.data()), inp_gpu_id, 0, 0, dynamic_bsz+1);
@@ -384,7 +384,7 @@ void BatchInputPreparer::UploadInputs(bool is_prefill, int inp_gpu_id, int out_g
     } else {
         int dynamic_bsz = this->decode_bsz;
         int dynamic_bl = (int)(this->decode_bids.size());
-        QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)(this->decode_inp_ids.data()), inp_gpu_id, 0, 0, dynamic_bsz);
+        // QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)(this->decode_inp_ids.data()), inp_gpu_id, 0, 0, dynamic_bsz);
         QuickUploadData(DataType::INT8, (void*)inp_batch_ids.cudaData, (uint8_t*)(this->decode_bids.data()), inp_gpu_id, 0, 0, dynamic_bl);
         QuickUploadData(DataType::INT32, (void*)query_pos_starts.cudaData, (uint8_t*)(this->decode_starts.data()), inp_gpu_id, 0, 0, dynamic_bsz+1);
         QuickUploadData(DataType::INT32, (void*)key_pos_starts.cudaData, (uint8_t*)(this->decode_starts.data()), inp_gpu_id, 0, 0, dynamic_bsz+1);
@@ -554,7 +554,7 @@ std::vector<AllocateParam> ContextPool::Reload(int data_id, std::string preparer
     // 分配方式使用了cache block链表 + 贪心的方法，所以会存在kv-cache碎片化的问题，所以建议max_length都使用2^n这样比较规范的长度，并将相同lora的较短请求放在一个batch request内提交。
 
     std::vector<AllocateParam> tobe_allocated;
-    if (!this->CanReload(data_id)) {
+    if (!this->CanReload(data_id) && !preparer_is_empty) {
         // 限制Reload频率，避免锁浪费时间。只在batch内任意样本结束推理、终止推理或达到reload间隔计数之后，才允许reload补充prefill。
         return tobe_allocated;
     }

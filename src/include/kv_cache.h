@@ -111,6 +111,7 @@ class KVPool {
     int start_layer_id;
     int num_layers; // pipeline layers, not global layers
     int cache_channel;
+    int max_dynamic_bsz;
     size_t pool_numel;
     size_t position_numel;
     size_t global_layer_stride;
@@ -122,16 +123,20 @@ class KVPool {
     void allocate_blocks(std::string request_id, size_t bl_start, int max_length);
     void free_block(std::string request_id, bool should_print);
     int get_count();
-
-    void write_local_layer_kv(std::string request_id, int local_layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, const Data& pos_starts, int batch_id, int step_num);
-    void  write_local_layer_kv(std::string request_id, int local_layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, int step_num);
-    void  read_local_layer_kv(std::string request_id, int local_layer_id, std::pair<Data*, Data*> kv_outs, int write_start_step, int read_start_step, int step_num);
     
-    void write_local_batch_kv(bool is_prefill, StringArray request_ids, int local_layer_id, std::pair<Data*, Data*> kv_pair, const Data& gpu_offsets, const Data& kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels);
-    void read_local_batch_kv_ref(StringArray request_ids, int local_layer_id, const Data& kv_ptrs, const Data& gpu_offsets, int max_dynamic_bsz, int read_start_step, bool shift_loaded);
     void print_cache(std::string request_id, int local_layer_id, bool is_value, int end_step);
+    void write_example_kvs_to_local_cache(bool is_prefill, int dynamic_bsz, int layer_id, std::pair<Data*, Data*> kv_pair, const Data& act_kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels);
+
+    size_t* example_numel_shifts;
+    Data example_numel_shifts_gpu;
+    void local_scatter_example_ptrs(StringArray req_ids, bool is_first_stage, size_t* first_stage_example_shifts);
+    Data local_get_layer_example_ptrs(int local_layer_id);
     private:
     void* cudaData_;
+    void** layerData; // [local_layer_num * 2]
+    int example_ptr_stride;
+    Data batch_ptrs;
+    Data gpu_layer_pointer;
     std::map<std::string, KVBlock*> cached_blocks;
 };
 
@@ -149,17 +154,16 @@ class PipelineKVPool {
     void free(std::string request_id);
     int get_caching_count();
 
-    void write_layer_kv(std::string request_id, int layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, const Data& pos_starts, int batch_id, int step_num);
-    void write_layer_kv(std::string request_id, int layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, int step_num);
-    void read_layer_kv(std::string request_id, int layer_id, std::pair<Data*, Data*> kv_outs, int write_start_step, int read_start_step, int step_num);
-    
-    void write_batch_layer_kv(bool is_prefill, StringArray request_ids, int layer_id, std::pair<Data*, Data*> kv_pair, const Data& gpu_offsets, const Data& kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels);
-    void read_batch_kv_ref(StringArray request_ids, int layer_id, const Data& kv_ptrs, const Data& gpu_offsets, int max_dynamic_bsz, int read_start_step, bool shift_loaded);
     void print_cache(std::string request_id, int layer_id, bool is_value, int end_step);
+    void write_example_kvs_to_cache(bool is_prefill, int dynamic_bsz, int layer_id, std::pair<Data*, Data*> kv_pair, const Data& act_kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels);
+
     // private:
     std::map<int, KVPool*> pipeline_caches;
     std::map<int, int> local_stage_starts;
     std::vector<int> layer2stage_map;
+
+    void scatter_example_ptrs(StringArray req_ids, int layer_id);
+    Data get_layer_example_ptrs(int layer_id);
 };
 
 } // namespace liteqwen

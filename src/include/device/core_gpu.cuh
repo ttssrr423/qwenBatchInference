@@ -47,6 +47,13 @@ void MoveGPUKVPtrs(const liteqwen::Data& kv_ptrs, void* cache_data, const liteqw
 void WriteGPUKV(bool is_prefill, void* cache_data, const liteqwen::Data& gpu_offsets, std::pair<liteqwen::Data*, liteqwen::Data*> kv_pair, const liteqwen::Data& kstarts, const liteqwen::Data& batch_ids, int dynamic_l, int kv_heads);
 void PrintWithShift(void* data, size_t layer_shift, int end_step, int channels);
 
+void MoveToLayerStarts(void** layerData, const liteqwen::Data& gpu_layer_pointer, void* cache_pool_data, size_t layer_stride, int num_layers);
+
+
+void WriteKVCaches(bool is_prefill, int local_layer_id, const liteqwen::Data& batch_ptrs, std::pair<liteqwen::Data*, liteqwen::Data*> kv_pair, const liteqwen::Data& act_kstarts, const liteqwen::Data& batch_ids, int dynamic_l, int kv_heads, int max_B);
+void ScatterLayerKVExamplePtrs(const liteqwen::Data& batch_layer_starts, const liteqwen::Data& example_numel_shifts_gpu, const liteqwen::Data& gpu_layer_start_ptrs, int dynamic_bsz);
+
+
 #ifdef  __cplusplus
 }
 #endif

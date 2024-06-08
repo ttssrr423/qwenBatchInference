@@ -56,7 +56,7 @@ void fill_cos_sin_on_gpu(int device_id, int max_seq_len, int channel, Data* cos_
 
 void UploadInputs(int gpu_id, bool is_prefill, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, int* cpu_input_ids, uint8_t* cpu_inp_bids, int* cpu_query_starts, int prefill_len, int bsz) {
     int upload_len = is_prefill ? prefill_len : bsz;
-    QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)cpu_input_ids, gpu_id, 0, 0, upload_len);
+    // QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)cpu_input_ids, gpu_id, 0, 0, upload_len);
     QuickUploadData(DataType::INT8, (void*)inp_batch_ids.cudaData, (uint8_t*)cpu_inp_bids, gpu_id, 0, 0, prefill_len);
     QuickUploadData(DataType::INT32, (void*)query_pos_starts.cudaData, (uint8_t*)cpu_query_starts, gpu_id, 0, 0, bsz+1);
     QuickUploadData(DataType::INT32, (void*)key_pos_starts.cudaData, (uint8_t*)cpu_query_starts, gpu_id, 0, 0, bsz+1);
@@ -89,7 +89,7 @@ LoraConfig GetLora(std::string preparer_name, std::string one_req_lora, std::map
     return lora_cfg;
 }
 
-void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cpu_query_starts, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, int batch_maxlen, int dynamic_bl, const LoraConfig& lora_cfg, Qwen2Params* config_ref, const Data& cos_embed, const Data& sin_embed, std::map<std::string, Data>* weights, std::map<std::string, std::pair<int, uintptr_t>>* quant4_meta, PipelineKVPool* kv_cache_ref, ExecuteTimer* timer) {
+void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cpu_inp_ids, int* cpu_query_starts, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, int batch_maxlen, int dynamic_bl, const LoraConfig& lora_cfg, Qwen2Params* config_ref, const Data& cos_embed, const Data& sin_embed, std::map<std::string, Data>* weights, std::map<std::string, std::pair<int, uintptr_t>>* quant4_meta, PipelineKVPool* kv_cache_ref, ExecuteTimer* timer) {
     int current_device = config_ref->input_deviceId;
     int hidden_size = config_ref->hidden_size;
     int num_layers = config_ref->num_layers;
@@ -129,10 +129,8 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
     Data k_proj_layer_tiled = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, channels*attention_heads}, -1, true); // 只在gqa prefill时使用，给cutlass flash attention
     Data v_proj_layer_tiled = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, channels*attention_heads}, -1, true); // 只在gqa prefill时使用，给cutlass flash attention
     Data flash_attn_workspace = Data(DataType::FLOAT32, std::vector<int>{1, static_cast<int>(static_L), attention_heads, channels}, -1, true); // 只在flash attention的output非fp32时被使用
-    Data scores = Data(DataType::FLOAT32, std::vector<int>{dynamic_bl, attention_heads}, -1, true); // 只在decode attention时使用，注意并非dynamic_L，而是dynamic_bl。
-    int ptr_data_len = sizeof(void*) * 2 * max_B / sizeof(uint8_t); // ptrs = [&k1, &v1, &k2, &v2, ...]
-    Data batch_kv_ptrs = Data(DataType::INT8, std::vector<int>{ptr_data_len}, -1, true); // 只在decode attention时使用。
-    Data batch_kv_shifts = Data(DataType::INT64, std::vector<int>{2 * max_B}, -1, true);
+    // Data scores = Data(DataType::FLOAT32, std::vector<int>{dynamic_bl, attention_heads}, -1, true); // 只在decode attention时使用，注意并非dynamic_L，而是dynamic_bl。
+    Data scores = Data(DataType::FLOAT16, std::vector<int>{dynamic_bl, attention_heads}, -1, true); // 只在decode attention时使用，注意并非dynamic_L，而是dynamic_bl。
     Data attended_out = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, hidden_size}, -1, true);
     Data dense_out =  Data(DataType::FLOAT16, std::vector<int>{dynamic_L, hidden_size}, -1, true);
     Data post_normalized_hidden = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, hidden_size}, -1, true);
@@ -230,7 +228,7 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
     // <=========== 开始forward主流程============
     if (is_prefill)
         timer->regist(std::string("embed_lookup"));
-    cpu_embedding_fwd(current_device, hidden_state, input_ids, (*weights)[std::string("model.embed_tokens.weight")], 0, dynamic_L, hidden_size);
+    cpu_embedding_fwd(current_device, hidden_state, cpu_inp_ids, (*weights)[std::string("model.embed_tokens.weight")], 0, dynamic_L, hidden_size);
     rotary_lookup(is_prefill, current_device, local_cos, local_sin, inp_batch_ids, key_pos_starts, cos_embed, sin_embed, 0, dynamic_L, channels, dynamic_bsz);
 
     bool device_switched = false; // 当前层是否刚切换完gpu
@@ -262,6 +260,11 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
         // 这样避免了layer之间不停地malloc以及free，节省运行时间。
         bool should_reallocate = device_switched || layer_id==0;
         bool should_free = is_last_layer_of_device;
+
+        if (should_reallocate) {
+            // 一次性计算stage内所有layer下每个样本的kv_cache的start指针。
+            kv_cache_ref->scatter_example_ptrs(request_ids, layer_id);
+        }
 
         SetDevice(current_device);
         std::string layer_prefix = std::string("model.layers.")+std::to_string(layer_id)+".";
@@ -327,15 +330,13 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
             timer->regist(std::string("apply_rotary")+std::to_string(layer_id));
         apply_rotary_embeddings(q_proj_layer, k_proj_layer, dynamic_bsz, dynamic_L, hidden_size, attention_heads, local_cos, local_sin);
 
-        batch_kv_shifts.Reallocate(current_device, should_reallocate);
         // 全量或增量写入预分配的KV缓存地址中。
         if (is_prefill) {
             timer->regist(std::string("cat_pasts")+std::to_string(layer_id));
-            kv_cache_ref->write_batch_layer_kv(true, request_ids, layer_id, std::pair<Data*, Data*>(&k_proj_layer, &v_proj_layer), batch_kv_shifts, local_kstarts, local_bids, max_B, dynamic_bl, kv_heads, channels);
-            batch_kv_shifts.Free(should_free);
+            kv_cache_ref->write_example_kvs_to_cache(true, request_ids.size(), layer_id, std::pair<Data*, Data*>(&k_proj_layer, &v_proj_layer), local_kstarts, local_bids, max_B, dynamic_bl, kv_heads, channels);
         } else {
             // decode step, append the dynamic_L=dynamic_bsz examples' incremental KV.
-            kv_cache_ref->write_batch_layer_kv(false, request_ids, layer_id, std::pair<Data*, Data*>(&k_proj_layer, &v_proj_layer), batch_kv_shifts, local_kstarts, local_bids, max_B, dynamic_bl, kv_heads, channels);
+            kv_cache_ref->write_example_kvs_to_cache(false, request_ids.size(), layer_id, std::pair<Data*, Data*>(&k_proj_layer, &v_proj_layer), local_kstarts, local_bids, max_B, dynamic_bl, kv_heads, channels);
         }
 
         if (is_prefill) {
@@ -376,25 +377,21 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
 
             scores.Reallocate(current_device, should_reallocate, max_BL*hidden_size);
             attended_out.Reallocate(current_device, should_reallocate, static_L*hidden_size);
-            batch_kv_ptrs.Reallocate(current_device, should_reallocate);
 
             // if (layer_id == 0) {
             //     for (int _bi=0; _bi<request_ids.size(); _bi++) {
             //         std::string req_id = request_ids[_bi];
-            //         int example_inp_len = cpu_seq_starts[_bi+1] - cpu_seq_starts[_bi];
             //         // kv_cache_ref->print_cache(req_id, layer_id, false, example_inp_len);
             //         kv_cache_ref->print_cache(req_id, layer_id, true, example_inp_len);
             //     }
             // }
 
-            decode_attention(attended_out, scores, request_ids, dynamic_bl, batch_maxlen, layer_id, q_proj_layer, local_bids, batch_kv_ptrs, batch_kv_shifts, local_qstarts, max_B, kv_cache_ref, kv_heads, channels, true);
+            decode_attention(attended_out, scores, request_ids, dynamic_bl, batch_maxlen, layer_id, q_proj_layer, local_bids, local_qstarts, max_B, kv_cache_ref, kv_heads, channels);
             // if (layer_id == 0 || layer_id == num_layers-1) {
             //     attended_out.print(std::string("decode_attended")+std::to_string(layer_id));
             // }
             q_proj_layer.Free(should_free);
             scores.Free(should_free);
-            batch_kv_ptrs.Free(should_free);
-            batch_kv_shifts.Free(should_free);
         }
 
         if (is_prefill)
@@ -525,8 +522,6 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
     // logits_ptr->print(std::string("logits"));
     if (is_prefill)
         timer->regist(std::string("end"));
-
-    // delete cpu_seq_starts;
 }
 
 size_t expanded_numel(size_t numel) {
@@ -650,6 +645,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
         // printf("added weight %s to gpu %i, shape=[%s]\n", w_key.c_str(), weight_device, get_shape_str(w_cpu_p->shape).c_str());
         DeviceSynchronize();
     }
+    SetEmbeddingBuffer(qwen2_param.max_sequence_length, qwen2_param.hidden_size);
     DeviceSynchronize();
 
     // 初始化gptq buffer
@@ -717,16 +713,18 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
     logits_last.Allocate();
     Data sampled_id = Data(DataType::INT32, std::vector<int>{qwen2_param.max_dynamic_bsz}, output_device, false);
     sampled_id.Allocate();
+    Data logitsFp32 = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, vocab_size}, output_device, false);
+    logitsFp32.Allocate();
 
-    Data _1_pass_result = Data(DataType::FLOAT16, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k, sample_grid_size}, output_device, false);
+    Data _1_pass_result = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k, sample_grid_size}, output_device, false);
     _1_pass_result.Allocate();
     Data _1_psss_indices = Data(DataType::INT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k, sample_grid_size}, output_device, false);
     _1_psss_indices.Allocate();
-    Data gpu_top_logits = Data(DataType::FLOAT16, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
+    Data gpu_top_logits = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
     gpu_top_logits.Allocate();
     Data gpu_top_indices = Data(DataType::INT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
     gpu_top_indices.Allocate();
-    Data sample_softmax_out = Data(DataType::FLOAT16, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
+    Data sample_softmax_out = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
     sample_softmax_out.Allocate();
     Data gpu_top_logits_fp32 = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
     gpu_top_logits_fp32.Allocate();
@@ -787,7 +785,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
     cpu_query_starts[1] = warmup_prefill_len;
     cpu_query_starts[2] = dynamic_bl_;
     UploadInputs(input_device, true, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, cpu_input_ids, cpu_inp_bids, cpu_query_starts, dynamic_bl_, dynamic_bsz_);
-    forward(&logits_last, true, warmup_reqs, cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen_, dynamic_bl_, warmup_lora, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &dummy_timer);
+    forward(&logits_last, true, warmup_reqs, cpu_input_ids, cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen_, dynamic_bl_, warmup_lora, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &dummy_timer);
     DeviceSynchronize();
     // --- warmup decode ---
     printf("warmup decoding...\n");
@@ -802,7 +800,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
         cpu_query_starts[bi_+1] = cpu_query_starts[bi_+1]+(bi_+1);
     }
     UploadInputs(input_device, false, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, cpu_input_ids, cpu_inp_bids, cpu_query_starts, dynamic_bl_, dynamic_bsz_);
-    forward(&logits_last, false, warmup_reqs, cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen_, dynamic_bl_, warmup_lora, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &dummy_timer);
+    forward(&logits_last, false, warmup_reqs, cpu_input_ids, cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen_, dynamic_bl_, warmup_lora, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &dummy_timer);
     DeviceSynchronize();
     kv_cache_ref->free(std::string("warmup0001"));
     kv_cache_ref->free(std::string("warmup0002"));
@@ -866,12 +864,12 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
 
             // 上传inputs， forward，以及清空preparer的信息（为BatchUpdate后的decode inputs清理lists）。
             batch_inp_preparer->UploadInputs(true, input_device, output_device, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, temperature, seeds_tensor, top_ps, dynamic_bsz);
-            forward(&logits_last, true, batch_inp_preparer->prefill_req_ids, cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen, dynamic_bl, prefill_lora_cfg, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &timer);
+            forward(&logits_last, true, batch_inp_preparer->prefill_req_ids, batch_inp_preparer->prefill_inp_ids.data(), cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen, dynamic_bl, prefill_lora_cfg, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &timer);
 
             // 初始化随机种子，应用温度，采样token
             gpu_curand_init(output_device, qwen2_param.world_size, dynamic_bsz, 0, seeds_tensor);
-            filterInvalidApplyTemperature(logits_last, temperature, vocab_size, dynamic_bsz, usual_eos_id);
-            topk_sampling(sampled_id, output_device, qwen2_param.world_size, 0, logits_last, vocab_size, top_k, top_ps, _1_pass_result, _1_psss_indices, gpu_top_logits, gpu_top_indices, sample_softmax_out, dynamic_bsz);
+            filterInvalidApplyTemperature(logitsFp32, logits_last, temperature, vocab_size, dynamic_bsz, usual_eos_id);
+            topk_sampling(sampled_id, output_device, qwen2_param.world_size, 0, logitsFp32, vocab_size, top_k, top_ps, _1_pass_result, _1_psss_indices, gpu_top_logits, gpu_top_indices, sample_softmax_out, dynamic_bsz);
             
             BatchGeneratedRes gen_res = download_sampled(sampled_id, cpu_sampled_id, eos_ids, qwen2_param.eos_token_num, dynamic_bsz);
 
@@ -888,6 +886,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
 
         if (decode_bsz == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            batch_inp_preparer->all_eos = true;
             continue;
         }
 
@@ -916,36 +915,17 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
         
         // batch所需cpu端的inputs已经在上次BatchUpdate时填好。
         batch_inp_preparer->UploadInputs(false, input_device, output_device, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, temperature, seeds_tensor, top_ps, decode_bsz);
-        forward(&logits_last, false, decode_request_ids, cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen, dynamic_bl, decode_lora, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &timer);
+        forward(&logits_last, false, decode_request_ids, batch_inp_preparer->decode_inp_ids.data(), cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen, dynamic_bl, decode_lora, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &timer);
         // 清理cpu上的数据，为下次DecodeUpdate做准备。decode_request_ids和cpu_query_starts被维护好了，不受清理的影响。
         batch_inp_preparer->ClearDecode();
         // 记录当前decode的lora
         prev_forward_lora = decode_lora.model_name;
 
         gpu_curand_init(output_device, qwen2_param.world_size, decode_bsz, 0, seeds_tensor);
-        filterInvalidApplyTemperature(logits_last, temperature, vocab_size, decode_bsz, usual_eos_id);
-        topk_sampling(sampled_id, output_device, qwen2_param.world_size, 0, logits_last, vocab_size, top_k, top_ps, _1_pass_result, _1_psss_indices, gpu_top_logits, gpu_top_indices, sample_softmax_out, decode_bsz);
+        filterInvalidApplyTemperature(logitsFp32, logits_last, temperature, vocab_size, decode_bsz, usual_eos_id);
+        topk_sampling(sampled_id, output_device, qwen2_param.world_size, 0, logitsFp32, vocab_size, top_k, top_ps, _1_pass_result, _1_psss_indices, gpu_top_logits, gpu_top_indices, sample_softmax_out, decode_bsz);
         
         BatchGeneratedRes decode_res = download_sampled(sampled_id, cpu_sampled_id, eos_ids, qwen2_param.eos_token_num, decode_bsz);
-        
-        DeviceSynchronize();
-        // for (int dec_id=0; dec_id < decode_request_ids.size(); dec_id++) {
-        //     std::string req_id = decode_request_ids[dec_id];
-        //     auto dec_ctx_ref = pool->GetRes(req_id, false);
-        //     int example_len = dec_ctx_ref->current_length;
-        //     DeviceSynchronize();
-            
-        //     if (decode_res.batch_eoses[dec_id] && (example_len-dec_ctx_ref->input_length)<4) {
-        //         printf("<======showing cache layer0 for early stop req=%s\n", req_id.c_str());
-        //         DeviceSynchronize();
-        //         kv_cache_ref->print_cache(req_id, 0, true, example_len);
-        //         DeviceSynchronize();
-        //         Data example_lgt = Data(DataType::FLOAT16, std::vector<int>{1, vocab_size}, output_device, logits_last.cudaData, static_cast<size_t>(dec_id)*vocab_size);
-        //         example_lgt.print(std::string("logits_b")+std::to_string(dec_id), 20);
-        //         sampled_id.print(std::string("sampled"), 10);
-        //         printf("<======");
-        //     }  
-        // }
         
         batch_inp_preparer->DecodeUpdate(data_id, decode_request_ids, decode_res.batch_eoses, decode_res.batch_tk_ids, pool, kv_cache_ref);
         prev_iteration_is_prefill = false;

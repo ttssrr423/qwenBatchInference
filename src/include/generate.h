@@ -18,7 +18,7 @@
 namespace liteqwen {
     void UploadInputs(int gpu_id, bool is_prefill, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, int* cpu_input_ids, uint8_t* cpu_inp_bids, int* cpu_query_starts, int prefill_len, int bsz);
 
-    void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, const Data& input_ids, const Data& inp_batch_ids, const Data& key_pos_starts, const Data& val_pos_starts, int batch_maxlen, int dynamic_bl, const LoraConfig& lora_cfg, Qwen2Params* config_ref, const Data& cos_embed, const Data& sim_embed, std::map<std::string, Data>* weights, std::map<std::string, std::pair<int, uintptr_t>>* quant4_meta, PipelineKVPool* kv_cache_ref, ExecuteTimer* timer);
+    void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cpu_inp_ids, int* cpu_query_starts, const Data& input_ids, const Data& inp_batch_ids, const Data& key_pos_starts, const Data& val_pos_starts, int batch_maxlen, int dynamic_bl, const LoraConfig& lora_cfg, Qwen2Params* config_ref, const Data& cos_embed, const Data& sim_embed, std::map<std::string, Data>* weights, std::map<std::string, std::pair<int, uintptr_t>>* quant4_meta, PipelineKVPool* kv_cache_ref, ExecuteTimer* timer);
 
     LoraConfig GetLora(std::string preparer_name, std::string one_req_lora, std::map<std::string, liteqwen::LoraConfig>* lora_meta);
     void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_param, std::map<std::string, Data*>* cpu_weights_ptr, std::map<std::string, 

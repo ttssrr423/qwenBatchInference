@@ -20,7 +20,7 @@ peft版本0.4.0之后，需要注意lora模型的`adapter_config.json`中`"use_r
 
 vllm吞吐量：419字符/秒，显存占用14.8G (--gpu-memory-utilization 限制)
 
-liteqwen吞吐量：204字符/秒，显存占用12.9G
+liteqwen吞吐量：213字符/秒，显存占用12.9G
 
 吞吐量仍存在一定差距，需要后续优化。
 

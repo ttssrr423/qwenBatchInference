@@ -32,9 +32,64 @@ KVPool::KVPool(int gpu_id, int max_dynamic_bsz, int max_dynamic_length, int star
     this->start_layer_id = start_layer_id;
     this->num_layers = num_layers; // local_layer_num
     this->gpu_id = gpu_id;
+    this->max_dynamic_bsz = max_dynamic_bsz;
 
     this->cudaData_ = GetDtypeCudaMalloc(gpu_id, liteqwen::DataType::FLOAT16, this->pool_numel, false);
     this->global_layer_stride = static_cast<size_t>(max_dynamic_length) * cache_channel;
+    this->layerData = new void*[num_layers * 2]; // k & v start pointer for each layer
+
+    this->example_numel_shifts = new size_t[max_dynamic_bsz];
+
+    DeviceSynchronize();
+    this->example_numel_shifts_gpu.Init(DataType::INT64, std::vector<int>{max_dynamic_bsz}, gpu_id, false);
+    example_numel_shifts_gpu.Allocate();
+
+    int ptr_data_len = sizeof(void*) * 2 * num_layers / sizeof(uint8_t); // ptrs = [&layer1_key, &layer1_value, &layer2_key, &layer2_value, ...]
+    this->gpu_layer_pointer.Init(DataType::INT8, std::vector<int>{ptr_data_len}, gpu_id, false);
+    this->gpu_layer_pointer.Allocate(static_cast<size_t>(ptr_data_len+1));
+    DeviceSynchronize();
+    MoveToLayerStarts(this->layerData, this->gpu_layer_pointer, this->cudaData_, this->global_layer_stride, num_layers);
+    printf("stage with layers[%i, %i) initialized the starting pointers for each layer.\n", this->start_layer_id, this->start_layer_id+num_layers);
+    DeviceSynchronize();
+    this->example_ptr_stride = ptr_data_len;
+
+    int one_batch_ptr_len = sizeof(void*) * 2/sizeof(uint8_t);
+    this->batch_ptrs.Init(DataType::INT8, std::vector<int>{num_layers, max_dynamic_bsz, one_batch_ptr_len}, gpu_id, false);
+    this->batch_ptrs.Allocate();
+    DeviceSynchronize();
+}
+
+void KVPool::local_scatter_example_ptrs(StringArray req_ids, bool is_first_stage, size_t* first_stage_example_shifts) {
+    SetDevice(this->gpu_id);
+
+    int dynamic_bsz = req_ids.size();
+    // 样本在kv-cache中的固定位置，只在stage0的KVPool的cpu中被维护，所以其他stage复制stage0的example_numel_shifts信息。
+    for (int bi=0; bi<dynamic_bsz; bi++) {
+        if (is_first_stage) {
+            auto block_it = this->cached_blocks.find(req_ids[bi]);
+            if (block_it != this->cached_blocks.end()) {
+                size_t example_cache_start_numel_shift = (block_it->second)->position_start; // pos * channel
+                this->example_numel_shifts[bi] = example_cache_start_numel_shift;
+            }
+        } else {
+            this->example_numel_shifts[bi] = first_stage_example_shifts[bi];
+        }
+    }
+    // DeviceSynchronize();
+    cudaMemcpy((size_t*)(this->example_numel_shifts_gpu.cudaData), this->example_numel_shifts, sizeof(size_t)*dynamic_bsz, cudaMemcpyHostToDevice);
+
+    // shifting each layer starts to numel starts for each example in req_ids.
+    // batch_layer_starts: [local_layer_num, max_B, 2 * uint8_size(void*)], dtype=uint8
+    // example_numel_shifts_gpu: [max_dynamic_bsz] dtype=size_t
+    // gpu_layer_start_ptrs: [local_layer_num * 2 * uint8_size(void*)], dtype=uint8
+    ScatterLayerKVExamplePtrs(this->batch_ptrs, this->example_numel_shifts_gpu, this->gpu_layer_pointer, dynamic_bsz);
+}
+
+Data KVPool::local_get_layer_example_ptrs(int local_layer_id) {
+    int single_layer_ptr_numel = sizeof(void*) * 2/sizeof(uint8_t) * this->max_dynamic_bsz;
+    size_t layer_offset = static_cast<size_t>(single_layer_ptr_numel) * local_layer_id;
+    Data res = Data(DataType::INT8, std::vector<int>{single_layer_ptr_numel}, this->gpu_id, this->batch_ptrs.cudaData, layer_offset);
+    return res;
 }
 
 std::pair<bool, size_t> KVPool::search_block(std::string request_id, int max_length) {
@@ -217,165 +272,15 @@ int KVPool::get_count() {
     return static_cast<int>(this->cached_blocks.size());
 }
 
-void KVPool::write_local_layer_kv(std::string request_id, int local_layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, const Data& pos_starts, int bi, int example_len) {
-    // 需要已经成功allocate过缓存，且 cache_start_step + step_num < block的max_length，才能保证新写入的数据不覆盖其他样本。
-    // layer_shift_key首先考虑了【layer位移+cache allocate时的动态block位移】，之后write_offset_key再考虑绝对step下写入的位移。
-    // 输出act_position则对应了activation的BL位置，不同样本的BL*channel数据应当被紧密排列。
-    if (this->cached_blocks.find(request_id) != this->cached_blocks.end()) {
-        int block_maxlen = this->cached_blocks[request_id]->max_length;
 
-        size_t layer_shift_key = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, false);
-        size_t layer_shift_val = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, true);
-
-        void* pairKeyData = kv_pair.first->cudaData;
-        void* pairValueData = kv_pair.second->cudaData;
-        int gpu_id = kv_pair.first->gpu_id;
-
-        if (act_position<0) { // cache_start_step=0
-            size_t write_offset_key = layer_shift_key + cache_start_step * this->cache_channel;
-            size_t write_offset_val = layer_shift_val + cache_start_step * this->cache_channel;
-            WriteKVCacheFromBatch(true, this->cudaData_, pairKeyData, gpu_id, write_offset_key, pos_starts, bi, this->cache_channel, example_len);
-            WriteKVCacheFromBatch(true, this->cudaData_, pairValueData, gpu_id, write_offset_val, pos_starts, bi, this->cache_channel, example_len);
-        } else {
-            // cache_start_step = -1
-            size_t write_offset_key = layer_shift_key;
-            size_t write_offset_val = layer_shift_val;            
-            WriteKVCacheFromBatch(false, this->cudaData_, pairKeyData, gpu_id, write_offset_key, pos_starts, bi, this->cache_channel, example_len);
-            WriteKVCacheFromBatch(false, this->cudaData_, pairValueData, gpu_id, write_offset_val, pos_starts, bi, this->cache_channel, example_len);
-        }
-    } else {
-        printf("ERROR: KV cache for req=%s not found, please check whether the cache has been allocated.\n", request_id.c_str());
-    }
-}
-
-void KVPool::write_local_layer_kv(std::string request_id, int local_layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, int step_num) {
-    // 需要已经成功allocate过缓存，且 cache_start_step + step_num < block的max_length，才能保证新写入的数据不覆盖其他样本。
-    // layer_shift_key首先考虑了【layer位移+cache allocate时的动态block位移】，之后write_offset_key再考虑绝对step下写入的位移。
-    // 输出act_position则对应了activation的BL位置，不同样本的BL*channel数据应当被紧密排列。
-    if (this->cached_blocks.find(request_id) != this->cached_blocks.end()) {
-        int block_maxlen = this->cached_blocks[request_id]->max_length;
-
-        size_t layer_shift_key = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, false);
-        size_t layer_shift_val = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, true);
-
-        size_t write_offset_key = layer_shift_key + cache_start_step * this->cache_channel;
-        size_t write_offset_val = layer_shift_val + cache_start_step * this->cache_channel;
-
-        void* pairKeyData = kv_pair.first->cudaData;
-        void* pairValueData = kv_pair.second->cudaData;
-        int gpu_id = kv_pair.first->gpu_id;
-
-        printf("write to local layer=%i, layer_kshift=%lu+position_shift=%lu+step_shift=%lu\n", local_layer_id, layer_shift_key-this->cached_blocks[request_id]->position_start, this->cached_blocks[request_id]->position_start, cache_start_step * this->cache_channel);
-
-        size_t read_offset = static_cast<size_t>(act_position) * this->cache_channel;
-        size_t copy_length = static_cast<size_t>(step_num) * this->cache_channel;
-
-        CopyGPUData(DataType::FLOAT16, this->cudaData_, pairKeyData, gpu_id, write_offset_key, read_offset, copy_length, false);
-        CopyGPUData(DataType::FLOAT16, this->cudaData_, pairValueData, gpu_id, write_offset_val, read_offset, copy_length, false);
-    } else {
-        printf("ERROR: KV cache for req=%s not found, please check whether the cache has been allocated.\n", request_id.c_str());
-    }
-}
-
-void KVPool::read_local_layer_kv(std::string request_id, int local_layer_id, std::pair<Data*, Data*> kv_outs, int act_position, int cache_start_step, int step_num) {
-    if (this->cached_blocks.find(request_id) != this->cached_blocks.end()) {
-        int block_maxlen = this->cached_blocks[request_id]->max_length;
-        if (step_num + cache_start_step > block_maxlen) {
-            printf("ERROR: skipping illegal cache read for req=%s. Cannot read step=shift(%i)+len(%i) > maxlen(%i), please allocate a larger buffer, or early stop the generation.\n", request_id.c_str(), cache_start_step, step_num, block_maxlen);
-            return;
-        }
-
-        size_t layer_shift_key = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, false);
-        size_t layer_shift_val = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, true);
-
-        size_t write_offset =  static_cast<size_t>(act_position) * this->cache_channel;
-        size_t read_offset_key = (layer_shift_key +  cache_start_step * this->cache_channel);
-        size_t read_offset_val = (layer_shift_val +  cache_start_step * this->cache_channel);
-        size_t copy_length = static_cast<size_t>(step_num) * this->cache_channel;
-
-        void* outKeyData = kv_outs.first->cudaData;
-        void* outValueData = kv_outs.second->cudaData;
-
-        CopyGPUData(DataType::FLOAT16, outKeyData, this->cudaData_, gpu_id, write_offset, read_offset_key, copy_length, false);
-        CopyGPUData(DataType::FLOAT16, outValueData, this->cudaData_, gpu_id, write_offset, read_offset_val, copy_length, false);
-    } else {
-        printf("ERROR: KV cache for req=%s not found, please check whether the cache has been allocated.\n", request_id.c_str());
-    }
-}
-
-void KVPool::write_local_batch_kv(bool is_prefill, StringArray request_ids, int local_layer_id, std::pair<Data*, Data*> kv_pair, const Data& gpu_offsets, const Data& kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels) {
-    int dynamic_bsz = (int)(request_ids.size());
+void KVPool::write_example_kvs_to_local_cache(bool is_prefill, int dynamic_bsz, int local_layer_id, std::pair<Data*, Data*> kv_pair, const Data& act_kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels) {
     int dynamic_len;
     if (is_prefill) {
         dynamic_len = dynamic_bl;
     } else {
         dynamic_len = dynamic_bsz;
     }
-
-    if (this->cache_channel != kv_heads * channels) {
-        printf("ERROR: Writing kv activation dim=%ix%i, but cache size=%i. Make sure these are equal.\n", kv_heads, channels, this->cache_channel);
-        throw("");
-    }
-    if (channels != 128) {
-        printf("ERROR: only kv channel 128 supported, if other channels are used, make sure WriteGPUKV implements copying kernel with other dim.\n");
-        throw("");
-    }
-
-    size_t* shifts = (size_t*)gpu_offsets.cudaData;
-    // size_t each_example_start_offset = static_cast<size_t>(read_start_step) * this->cache_channel;
-    size_t* shifts_cpu = new size_t[2*max_dynamic_bsz];
-    for (int bi=0; bi<dynamic_bsz; bi++) {
-        std::string request_id = request_ids[bi];
-        if (this->cached_blocks.find(request_id) != this->cached_blocks.end()) {
-            size_t layer_shift_key = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, false);
-            size_t layer_shift_val = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, true);
-
-            size_t cache_start = this->cached_blocks[request_id]->position_start;
-            // printf("found local layer=%i, req=%s, layer_kshift=%lu, layer_vshift=%lu, cache_start_pos=%lu\n", local_layer_id, request_id.c_str(), layer_shift_key, layer_shift_val, cache_start);
-
-            shifts_cpu[bi*2] = layer_shift_key; // + each_example_start_offset;
-            shifts_cpu[bi*2+1] = layer_shift_val; // + each_example_start_offset;
-        } else {
-            printf("ERROR: KV cache for req=%s not found, please check whether the cache has been allocated.\n", request_id.c_str());
-        }        
-    }
-    cudaMemcpy(shifts, shifts_cpu, sizeof(size_t)*2*max_dynamic_bsz, cudaMemcpyHostToDevice);
-    WriteGPUKV(is_prefill, this->cudaData_, gpu_offsets, kv_pair, kstarts, batch_ids, dynamic_len, kv_heads);
-    delete shifts_cpu;
-}
-
-void KVPool::read_local_batch_kv_ref(StringArray request_ids, int local_layer_id, const Data& kv_ptrs, const Data& gpu_offsets, int max_dynamic_bsz, int read_start_step, bool shift_loaded) {
-    int dynamic_bsz = (int)(request_ids.size());
-
-    if (!shift_loaded) {
-        size_t* shifts = (size_t*)gpu_offsets.cudaData;
-        size_t* shifts_cpu;
-        // if gpu_offsets already loaded during kv-cache write, ignore this step in attention reading step.
-        size_t copy_size = sizeof(void*) * 2 * max_dynamic_bsz;
-        size_t each_example_start_offset = static_cast<size_t>(read_start_step) * this->cache_channel;
-        size_t void_half_ratio = sizeof(__half) / sizeof(void);
-
-        shifts_cpu = new size_t[2*max_dynamic_bsz];
-        for (int bi=0; bi<dynamic_bsz; bi++) {
-            std::string request_id = request_ids[bi];
-            if (this->cached_blocks.find(request_id) != this->cached_blocks.end()) {
-                size_t layer_shift_key = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, false);
-                size_t layer_shift_val = this->cached_blocks[request_id]->get_layer_shift(local_layer_id, true);
-
-                size_t cache_start = this->cached_blocks[request_id]->position_start;
-                // printf("found local layer=%i, req=%s, layer_kshift=%lu, layer_vshift=%lu, cache_start_pos=%lu\n", local_layer_id, request_id.c_str(), layer_shift_key, layer_shift_val, cache_start);
-
-                shifts_cpu[bi*2] = layer_shift_key + each_example_start_offset;
-                shifts_cpu[bi*2+1] = layer_shift_val + each_example_start_offset;
-            } else {
-                printf("ERROR: KV cache for req=%s not found, please check whether the cache has been allocated.\n", request_id.c_str());
-            }
-        }
-        cudaMemcpy(shifts, shifts_cpu, sizeof(size_t)*2*max_dynamic_bsz, cudaMemcpyHostToDevice);
-        delete shifts_cpu;
-    }
-
-    MoveGPUKVPtrs(kv_ptrs, this->cudaData_, gpu_offsets, dynamic_bsz);
+    WriteKVCaches(is_prefill, local_layer_id, this->batch_ptrs, kv_pair, act_kstarts, batch_ids, dynamic_len, kv_heads, this->max_dynamic_bsz);
 }
 
 void KVPool::print_cache(std::string request_id, int local_layer_id, bool is_value, int end_step) {
@@ -469,41 +374,33 @@ int PipelineKVPool::get_caching_count() {
     return (this->pipeline_caches)[0]->get_count();
 }
 
-void PipelineKVPool:: write_layer_kv(std::string request_id, int layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, int step_num) {
+void PipelineKVPool::write_example_kvs_to_cache(bool is_prefill, int dynamic_bsz, int layer_id, std::pair<Data*, Data*> kv_pair, const Data& act_kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels) {
     int stage_id = this->layer2stage_map[layer_id];
     int local_layer_id = layer_id - this->local_stage_starts[stage_id];
-    (this->pipeline_caches)[stage_id]->write_local_layer_kv(request_id, local_layer_id, kv_pair, cache_start_step, act_position, step_num);
-}
-
-void PipelineKVPool:: write_layer_kv(std::string request_id, int layer_id, std::pair<Data*, Data*> kv_pair, int cache_start_step, int act_position, const Data& pos_starts, int bi, int step_num) {
-    // if prefill, cache_start_step=0 && act_position=-1; if decode, cache_start_step=-1 && act_position=bi
-    int stage_id = this->layer2stage_map[layer_id];
-    int local_layer_id = layer_id - this->local_stage_starts[stage_id];
-    (this->pipeline_caches)[stage_id]->write_local_layer_kv(request_id, local_layer_id, kv_pair, cache_start_step, act_position, pos_starts, bi, step_num);
-}
-
-void PipelineKVPool:: read_layer_kv(std::string request_id, int layer_id, std::pair<Data*, Data*> kv_outs, int write_start_step, int read_start_step, int step_num) {
-    int stage_id = this->layer2stage_map[layer_id];
-    int local_layer_id = layer_id - this->local_stage_starts[stage_id];
-    (this->pipeline_caches)[stage_id]->read_local_layer_kv(request_id, local_layer_id, kv_outs, write_start_step, read_start_step, step_num);
-}
-
-void PipelineKVPool::read_batch_kv_ref(StringArray request_ids, int layer_id, const Data& kv_ptrs, const Data& gpu_offsets, int max_dynamic_bsz, int read_start_step, bool shift_loaded) {
-    int stage_id = this->layer2stage_map[layer_id];
-    int local_layer_id = layer_id - this->local_stage_starts[stage_id];
-    (this->pipeline_caches)[stage_id]->read_local_batch_kv_ref(request_ids, local_layer_id, kv_ptrs, gpu_offsets, max_dynamic_bsz, read_start_step, shift_loaded);
-}
-
-void PipelineKVPool::write_batch_layer_kv(bool is_prefill, StringArray request_ids, int layer_id, std::pair<Data*, Data*> kv_pair, const Data& gpu_offsets, const Data& kstarts, const Data& batch_ids, int max_dynamic_bsz, int dynamic_bl, int kv_heads, int channels) {
-    int stage_id = this->layer2stage_map[layer_id];
-    int local_layer_id = layer_id - this->local_stage_starts[stage_id];
-    (this->pipeline_caches)[stage_id]->write_local_batch_kv(is_prefill, request_ids, local_layer_id, kv_pair, gpu_offsets, kstarts, batch_ids, max_dynamic_bsz, dynamic_bl, kv_heads, channels);
+    (this->pipeline_caches)[stage_id]->write_example_kvs_to_local_cache(is_prefill, dynamic_bsz, local_layer_id, kv_pair, act_kstarts, batch_ids, max_dynamic_bsz, dynamic_bl, kv_heads, channels);
 }
 
 void PipelineKVPool::print_cache(std::string request_id, int layer_id, bool is_value, int end_step) {
     int stage_id = this->layer2stage_map[layer_id];
     int local_layer_id = layer_id - this->local_stage_starts[stage_id];
     (this->pipeline_caches)[stage_id]->print_cache(request_id, local_layer_id, is_value, end_step);
+}
+
+void PipelineKVPool::scatter_example_ptrs(StringArray req_ids, int layer_id) {
+    int stage_id = this->layer2stage_map[layer_id];
+    // int local_layer_id = layer_id - this->local_stage_starts[stage_id];
+    size_t* first_stage_shifts_cpu = (this->pipeline_caches)[0]->example_numel_shifts;
+    if (stage_id == 0) {
+        (this->pipeline_caches)[stage_id]->local_scatter_example_ptrs(req_ids, true, first_stage_shifts_cpu);
+    } else {
+        (this->pipeline_caches)[stage_id]->local_scatter_example_ptrs(req_ids, false, first_stage_shifts_cpu);
+    }
+}
+
+Data PipelineKVPool::get_layer_example_ptrs(int layer_id) {
+    int stage_id = this->layer2stage_map[layer_id];
+    int local_layer_id = layer_id - this->local_stage_starts[stage_id];
+    return (this->pipeline_caches)[stage_id]->local_get_layer_example_ptrs(local_layer_id);
 }
 
 } //namespace liteqwen

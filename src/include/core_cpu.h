@@ -108,8 +108,8 @@ namespace liteqwen{
     int ceil_divide(int a, int b);
     
     void setup_gpu_cublas_handler(int gpu_id);
-
-    void cpu_embedding_copy(uint8_t* cpu_embeddings, uint8_t* read_row, int* cpu_input_ids, int lookup_len, int channel);
+    void SetEmbeddingBuffer(int max_BL, int hidden_size);
+    uint8_t* cpu_embedding_copy(uint8_t* read_row, int* cpu_input_ids, int lookup_len, int channel);
     
 }
 

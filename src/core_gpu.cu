@@ -211,6 +211,35 @@ __global__ void copyBatchDecodeCacheDataKernel(void* cache_data, size_t* write_s
 
 }
 
+
+__global__ void writeBatchDecodeCacheDataKernel(void** example_cache_ptr, int layer_id, __half* key_act, __half* value_act, int* key_starts, int dynamic_l, int kv_heads, int num_ptrs_per_layer) {
+    int batch_id = blockIdx.x / kv_heads;
+    int head_id = blockIdx.x % kv_heads;
+    int tid = threadIdx.x;
+    const int channels = 128;
+    __shared__ __half* sbatch_cache_data[2];
+    __shared__ int step_id;
+
+    if (tid < 2) {
+        void* cache_data_ptr = example_cache_ptr[num_ptrs_per_layer * layer_id + batch_id * 2 + tid];
+        sbatch_cache_data[tid] = reinterpret_cast<__half*>(cache_data_ptr);
+    }
+    if (tid==0) {
+        step_id = key_starts[batch_id+1] - key_starts[batch_id] - 1;
+    }
+    __syncthreads();
+
+    size_t read_pos_chn_shift = static_cast<size_t>(batch_id) * kv_heads * channels + head_id * channels + tid;
+    size_t write_pos_chn_shift = static_cast<size_t>(step_id) * kv_heads * channels + head_id * channels + tid;
+
+    if (step_id >= 0) {
+        __half* cache_key = sbatch_cache_data[0];
+        __half* cache_value = sbatch_cache_data[1];
+        cache_key[write_pos_chn_shift] = key_act[read_pos_chn_shift];
+        cache_value[write_pos_chn_shift] = value_act[read_pos_chn_shift];
+    }
+}
+
 template<int grid_bound>
 __global__ void copyBatchPrefillCacheDataKernel(void* cache_data, size_t* write_shifts, __half* key_act, __half* value_act, int* key_starts, uint8_t* bids, int dynamic_l, int kv_heads, size_t block_boundary) {
 
@@ -242,6 +271,47 @@ __global__ void copyBatchPrefillCacheDataKernel(void* cache_data, size_t* write_
 
             h_cache_data[sbatch_cache_shifts[0] + write_pos_chn_shift] = key_act[read_pos_chn_shift];
             h_cache_data[sbatch_cache_shifts[1] + write_pos_chn_shift] = value_act[read_pos_chn_shift];            
+        }
+
+    }
+}
+
+
+template<int grid_bound>
+__global__ void writeBatchPrefillCacheDataKernel(void** example_cache_ptr, int layer_id, __half* key_act, __half* value_act, int* key_starts, uint8_t* bids, int kv_heads, int num_ptrs_per_layer, size_t block_boundary) {
+
+    int tid = threadIdx.x;
+    const int channels = 128;
+    __shared__ int step_id;
+    __shared__ int example_len;
+    __shared__ __half* cache_key;
+    __shared__ __half* cache_value;
+
+    void* dummy_ptr = example_cache_ptr[0];
+    // printf("b%it%i,%p|", blockIdx.x, threadIdx.x, dummy_ptr);
+    for (int blk_id=blockIdx.x; blk_id < block_boundary; blk_id+= grid_bound) {
+        int pos_id = blk_id / kv_heads;
+        int head_id = blk_id % kv_heads;
+
+        if (tid == 0) {
+            int batch_id = static_cast<int>(bids[pos_id]);
+            void* key_cache_ptr = example_cache_ptr[num_ptrs_per_layer * layer_id + batch_id * 2];
+            void* val_cache_ptr = example_cache_ptr[num_ptrs_per_layer * layer_id + batch_id * 2+1];
+            cache_key = reinterpret_cast<__half*>(key_cache_ptr);
+            cache_value = reinterpret_cast<__half*>(val_cache_ptr);
+
+            int example_act_start = key_starts[batch_id];
+            int example_act_end = key_starts[batch_id+1];
+            step_id = pos_id - example_act_start;
+            example_len = example_act_end - example_act_start;
+        }
+        __syncthreads();
+        if (step_id >= 0 && step_id < example_len) {
+            size_t read_pos_chn_shift = static_cast<size_t>(pos_id) * kv_heads * channels + head_id * channels + tid;
+            size_t write_pos_chn_shift = static_cast<size_t>(step_id) * kv_heads * channels + head_id * channels + tid;
+
+            cache_key[write_pos_chn_shift] = key_act[read_pos_chn_shift];
+            cache_value[write_pos_chn_shift] = value_act[read_pos_chn_shift];            
         }
 
     }
@@ -858,6 +928,27 @@ void CPUConvertFp16ToFp32(float* out, void* in, liteqwen::DataType dtype, size_t
     }
 }
 
+
+
+__global__ void moveLayerPointerKernel(void** gpu_ptr_out, __half* cache_start, size_t layer_stride, int num_layers) {
+    if (threadIdx.x == 0) {
+        size_t kv_separation = layer_stride * num_layers;
+        printf("kv cache layer ptr: key&value separation=%lu, layer_stride=%lu\n", kv_separation, layer_stride);
+        for (int i=0; i<num_layers; i++) {
+            __half* layer_ptr_key = cache_start + layer_stride * i;
+            __half* layer_ptr_val = cache_start + kv_separation + layer_stride * i;
+            gpu_ptr_out[2*i] = static_cast<void*>(layer_ptr_key);
+            gpu_ptr_out[2*i+1] = static_cast<void*>(layer_ptr_val);
+        }
+    }
+}
+void MoveToLayerStarts(void** layerData, const liteqwen::Data& gpu_layer_pointer, void* cache_pool_data, size_t layer_stride, int num_layers) {
+    int ptr_data_len = sizeof(void*) * 2 * num_layers / sizeof(uint8_t);
+    moveLayerPointerKernel<<<1, 1>>>(reinterpret_cast<void**>(gpu_layer_pointer.cudaData), reinterpret_cast<__half*>(cache_pool_data), layer_stride, num_layers);
+    DeviceSynchronize();
+    // DownloadData(liteqwen::DataType::INT8, reinterpret_cast<uint8_t*>(layerData), gpu_layer_pointer.cudaData, 0, 0, static_cast<size_t>(ptr_data_len));
+}
+
 // ========================
 // TESTING CODES
 // ========================
@@ -1047,8 +1138,72 @@ void WriteGPUKV(bool is_prefill, void* cache_data, const liteqwen::Data& gpu_off
     }
 }
 
+void WriteKVCaches(bool is_prefill, int local_layer_id, const liteqwen::Data& batch_ptrs, std::pair<liteqwen::Data*, liteqwen::Data*> kv_pair, const liteqwen::Data& act_kstarts, const liteqwen::Data& batch_ids, int dynamic_l, int kv_heads, int max_B) {
+    __half* key_act = (__half*)(kv_pair.first->cudaData);
+    __half* value_act = (__half*)(kv_pair.second->cudaData);
+
+    int num_ptrs_per_layer = max_B * 2;
+    void** cache_ptrs = (void**)batch_ptrs.cudaData;
+    if (is_prefill) {
+        const int grid_bound = 12288;
+        size_t block_boundary = static_cast<size_t>(dynamic_l)*kv_heads;
+        dim3 dimBlock(128);
+        if (block_boundary > grid_bound) {
+            dim3 dimGrid(12288);
+            writeBatchPrefillCacheDataKernel<grid_bound><<<dimGrid, dimBlock>>>(cache_ptrs, local_layer_id, key_act, value_act, (int*)act_kstarts.cudaData, (uint8_t*)batch_ids.cudaData, kv_heads, num_ptrs_per_layer, block_boundary);
+        } else {
+            dim3 dimGrid(dynamic_l * kv_heads);
+            writeBatchPrefillCacheDataKernel<grid_bound><<<dimGrid, dimBlock>>>(cache_ptrs, local_layer_id, key_act, value_act, (int*)act_kstarts.cudaData, (uint8_t*)batch_ids.cudaData, kv_heads, num_ptrs_per_layer, block_boundary);
+        }
+    } else {
+        dim3 dimGrid(dynamic_l*kv_heads);
+        dim3 dimBlock(128);
+        writeBatchDecodeCacheDataKernel<<<dimGrid, dimBlock>>>(cache_ptrs, local_layer_id, key_act, value_act, (int*)act_kstarts.cudaData, dynamic_l, kv_heads, num_ptrs_per_layer);
+    }
+}
+
 void PrintWithShift(void* data, size_t layer_shift, int end_step, int channels) {
     DeviceSynchronize();
     size_t numel = static_cast<size_t>(end_step) * channels;
     print_with_shift<<<1, 1>>>((__half*)data, layer_shift, numel, static_cast<size_t>(channels), 3, 5);
+}
+
+
+__global__ void batchShiftPtrKernel(void** out_ptr, size_t* example_shifts, void** layer_ptrs, int local_num_layers, int write_layer_stride) {
+    int batch_id = blockIdx.x;
+    int layer_id = threadIdx.x;
+
+    if (layer_id < local_num_layers) {
+        size_t example_numel_shift = example_shifts[batch_id];
+
+        __half* layer_k_base = reinterpret_cast<__half*>(layer_ptrs[layer_id*2]);
+        __half* layer_v_base = reinterpret_cast<__half*>(layer_ptrs[layer_id*2+1]);
+        // printf("scatter: layer=%i, layer_kbase[%i]=%p>>%lu, out_idx=%i\n", layer_id, layer_id*2, layer_ptrs[layer_id*2], example_numel_shift, write_layer_stride*layer_id + batch_id*2);
+        __half* example_k_start = layer_k_base + example_numel_shift;
+        __half* example_v_start = layer_v_base + example_numel_shift;
+
+        out_ptr[write_layer_stride*layer_id + batch_id*2] = static_cast<void*>(example_k_start);
+        out_ptr[write_layer_stride*layer_id + batch_id*2+1] = static_cast<void*>(example_v_start);
+    }
+}
+
+void ScatterLayerKVExamplePtrs(const liteqwen::Data& batch_layer_starts, const liteqwen::Data& example_numel_shifts_gpu, const liteqwen::Data& gpu_layer_start_ptrs, int dynamic_bsz) {
+    // batch_layer_starts: [local_layer_num, max_B, 2 * uint8_size(void*)], dtype=uint8
+    // example_numel_shifts_gpu: [max_dynamic_bsz] dtype=size_t
+    // gpu_layer_start_ptrs: [local_layer_num * 2 * uint8_size(void*)], dtype=uint8
+    int local_layer_num = batch_layer_starts.shape[0];
+
+    void** out_ptrs = (void**)(batch_layer_starts.cudaData);
+    size_t* example_shifts_data = (size_t*)example_numel_shifts_gpu.cudaData;
+    void** layer_ptrs = (void**)(gpu_layer_start_ptrs.cudaData);
+
+    int layer_write_stride = batch_layer_starts.shape[1] * 2; // max_B*2
+    dim3 dimGrid(dynamic_bsz);
+    if (local_layer_num <= 64) {
+        dim3 dimBlock(64);
+        batchShiftPtrKernel<<<dimGrid, dimBlock>>>(out_ptrs, example_shifts_data, layer_ptrs, local_layer_num, layer_write_stride);
+    } else if (local_layer_num <= 128) {
+        dim3 dimBlock(128);
+        batchShiftPtrKernel<<<dimGrid, dimBlock>>>(out_ptrs, example_shifts_data, layer_ptrs, local_layer_num, layer_write_stride);
+    }
 }

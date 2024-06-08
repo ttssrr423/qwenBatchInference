@@ -4,7 +4,7 @@ from multiprocessing import Process
 import datetime
 
 LOCAL_URL = "http://127.0.0.1:8081"
-PARALLEL_NUM = 16
+PARALLEL_NUM = 1
 ROUND_NUM = 5
 
 def single_id_request(_id):
@@ -32,7 +32,7 @@ def stream_post(inps):
     data = {"query":"你可以做什么？", "history":[["你好", "你好，我是小PAI，是人工智能机器人。"]]} # "request_id":"REQ"+str(req_id)
     # data = {"query": "那你明年多大啊？", "history": [["你好，你多大了", f"我{req_id+1}岁啦！"]]}  # "request_id":"REQ"+str(req_id)
     # lora_name = "skip" if random.random() < 0.5 else "default"
-    lora_name = "default"
+    lora_name = "skip"
     data.update({"gen_kwargs":{"max_length":256, "temperature":0.01, "adapter_name": lora_name}})
     print(f"submitted: {req_id}")
     stream_res = requests.post(LOCAL_URL+"/stream_chat_post", data=json.dumps(data), stream=True) # headers=headers,

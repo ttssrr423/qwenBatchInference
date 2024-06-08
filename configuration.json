@@ -1,5 +1,5 @@
 {
-  "model_name_or_path":"/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_bin",
+  "model_name_or_path":"/mnt/e/UbuntuFiles/models_saved/Qwen1.5-14B-Chat-GPTQ-Int4",
   "pipeline_parallel_size": 1,
   "use_lora": true,
   "adapters" : [
@@ -9,7 +9,7 @@
   "max_length":4096,
   "do_sample": true,
   "top_p": 0.9,
-  "top_k": 50,
+  "top_k": 32,
   "temperature": 0.8,
   "server_port": 8081,
   "web_port": 5001,
