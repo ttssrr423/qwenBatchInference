@@ -726,8 +726,12 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
     gpu_top_indices.Allocate();
     Data sample_softmax_out = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
     sample_softmax_out.Allocate();
-    Data gpu_top_logits_fp32 = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
-    gpu_top_logits_fp32.Allocate();
+    // Data gpu_top_logits_fp32 = Data(DataType::FLOAT32, std::vector<int>{qwen2_param.max_dynamic_bsz, top_k}, output_device, false);
+    // gpu_top_logits_fp32.Allocate();
+    int* top_batch_idx = new int[qwen2_param.max_dynamic_bsz * top_k];
+    float* top_batch_lgts = new float[qwen2_param.max_dynamic_bsz * top_k];
+    bool* cpu_return_logits = new bool[qwen2_param.max_dynamic_bsz];
+
     int* eos_ids = new int[qwen2_param.eos_token_num];
     for (int eos_pos=0; eos_pos<qwen2_param.eos_token_num; eos_pos++) {
         eos_ids[eos_pos] = qwen2_param.eos_ids[eos_pos]; 
@@ -863,6 +867,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
             LoraConfig prefill_lora_cfg = GetLora(prefill_lora_name, prefill_lora_name, lora_meta);
 
             // 上传inputs， forward，以及清空preparer的信息（为BatchUpdate后的decode inputs清理lists）。
+            bool batch_return_lgts = batch_inp_preparer->PrefillShouldReturnLogits(cpu_return_logits);
             batch_inp_preparer->UploadInputs(true, input_device, output_device, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, temperature, seeds_tensor, top_ps, dynamic_bsz);
             forward(&logits_last, true, batch_inp_preparer->prefill_req_ids, batch_inp_preparer->prefill_inp_ids.data(), cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen, dynamic_bl, prefill_lora_cfg, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &timer);
 
@@ -872,8 +877,11 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
             topk_sampling(sampled_id, output_device, qwen2_param.world_size, 0, logitsFp32, vocab_size, top_k, top_ps, _1_pass_result, _1_psss_indices, gpu_top_logits, gpu_top_indices, sample_softmax_out, dynamic_bsz);
             
             BatchGeneratedRes gen_res = download_sampled(sampled_id, cpu_sampled_id, eos_ids, qwen2_param.eos_token_num, dynamic_bsz);
-
-            batch_inp_preparer->PrefillUpdate(data_id, batch_inp_preparer->prefill_req_ids, gen_res.batch_eoses, gen_res.batch_tk_ids, pool, kv_cache_ref);
+            if (batch_return_lgts) {
+                batch_download_logits(top_batch_idx, top_batch_lgts, gpu_top_logits, gpu_top_indices, dynamic_bsz, top_k);
+            }
+            BatchLogitsRes top_lgt_info = BatchLogitsRes{batch_return_lgts, dynamic_bsz, top_k, top_batch_idx, top_batch_lgts, cpu_return_logits};
+            batch_inp_preparer->PrefillUpdate(data_id, batch_inp_preparer->prefill_req_ids, gen_res.batch_eoses, gen_res.batch_tk_ids, pool, kv_cache_ref, top_lgt_info);
             prev_iteration_is_prefill = true;
             continue;
         }
@@ -914,6 +922,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
         }
         
         // batch所需cpu端的inputs已经在上次BatchUpdate时填好。
+        bool batch_logits_enabled = batch_inp_preparer->DecodeShouldReturnLogits(cpu_return_logits);
         batch_inp_preparer->UploadInputs(false, input_device, output_device, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, temperature, seeds_tensor, top_ps, decode_bsz);
         forward(&logits_last, false, decode_request_ids, batch_inp_preparer->decode_inp_ids.data(), cpu_query_starts, input_ids, inp_batch_ids, query_pos_starts, key_pos_starts, batch_maxlen, dynamic_bl, decode_lora, &qwen2_param, full_cos, full_sin, &weights, &quant_ref_dict, kv_cache_ref, &timer);
         // 清理cpu上的数据，为下次DecodeUpdate做准备。decode_request_ids和cpu_query_starts被维护好了，不受清理的影响。
@@ -926,8 +935,11 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
         topk_sampling(sampled_id, output_device, qwen2_param.world_size, 0, logitsFp32, vocab_size, top_k, top_ps, _1_pass_result, _1_psss_indices, gpu_top_logits, gpu_top_indices, sample_softmax_out, decode_bsz);
         
         BatchGeneratedRes decode_res = download_sampled(sampled_id, cpu_sampled_id, eos_ids, qwen2_param.eos_token_num, decode_bsz);
-        
-        batch_inp_preparer->DecodeUpdate(data_id, decode_request_ids, decode_res.batch_eoses, decode_res.batch_tk_ids, pool, kv_cache_ref);
+        if (batch_logits_enabled) {
+            batch_download_logits(top_batch_idx, top_batch_lgts, gpu_top_logits, gpu_top_indices, decode_bsz, top_k);
+        }
+        BatchLogitsRes top_lgt_info = BatchLogitsRes{batch_logits_enabled, decode_bsz, top_k, top_batch_idx, top_batch_lgts, cpu_return_logits};
+        batch_inp_preparer->DecodeUpdate(data_id, decode_request_ids, decode_res.batch_eoses, decode_res.batch_tk_ids, pool, kv_cache_ref, top_lgt_info);
         prev_iteration_is_prefill = false;
         // std::this_thread::sleep_for(std::chrono::milliseconds(1000000));
     }

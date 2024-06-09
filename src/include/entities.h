@@ -143,6 +143,17 @@ struct ResponseContext
     void SetPrevLen(int prev_len);
 };
 
+struct BatchLogitsRes {
+    bool enabled;
+    int batch_size;
+    int top_k;
+    int* top_token_ids;
+    float* top_logits;
+    bool* return_logits;
+
+    void try_insert_logits(ResponseContext* ctx_ref, int batch_id);
+};
+
 class ExecuteTimer {
     public:
     ExecuteTimer();

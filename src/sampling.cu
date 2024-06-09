@@ -635,3 +635,11 @@ liteqwen::BatchGeneratedRes download_sampled(const liteqwen::Data& sampled_id, i
     }
     return liteqwen::BatchGeneratedRes{eoses, ids};
 }
+
+void batch_download_logits(int* top_batch_idx, float* top_batch_lgts, const liteqwen::Data& gpu_top_logits, const liteqwen::Data& gpu_top_indices, int dynamic_bsz, int top_k) {
+    int* top_idx_data = (int*)gpu_top_indices.cudaData;
+    float* top_lgts_data = (float*)gpu_top_logits.cudaData;
+    cudaMemcpy(top_batch_idx, top_idx_data, sizeof(int)*dynamic_bsz*top_k, cudaMemcpyDeviceToHost);
+    cudaMemcpy(top_batch_lgts, top_lgts_data, sizeof(int)*dynamic_bsz*top_k, cudaMemcpyDeviceToHost);
+    DeviceSynchronize();
+}

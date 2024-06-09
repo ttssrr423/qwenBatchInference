@@ -72,7 +72,7 @@ void BatchInputPreparer::AddPrefill(ResponseContext* ctx_ref) { // std::string r
 }
 
 
-void BatchInputPreparer::PrefillUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref) {
+void BatchInputPreparer::PrefillUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref, BatchLogitsRes top_logits_info) {
     std::vector<std::string> valid_request_ids;
     std::vector<std::string> invalid_request_ids;
 
@@ -146,15 +146,18 @@ void BatchInputPreparer::PrefillUpdate(int data_id, StringArray request_ids, std
         auto ctx_ref = pool->GetRes(matched_req_id);
         if (example_eos) { // prefill直接生成eos
             printf("TOKEN_UPDATE: first frame eos for req=%s, no decoding for the request\n", matched_req_id.c_str());
+            top_logits_info.try_insert_logits(ctx_ref, prev_bid);
             ctx_ref->Append(example_tk_id, true);
             kv_cache_ref->free(matched_req_id);
             pool->SetReloadOn(data_id);
         } else if (example_curlen >= example_maxlen ) { // prefill长度达到或超过maxlen，需要避免这样的input。
             if (example_tk_id == 0) {
                 printf("TOKEN_UPDATE ERROR: generated token_id=0 for req=%s, this is unusual, should check for nan & inf values.\n", matched_req_id.c_str());
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 ctx_ref->Append(example_tk_id, true);
             } else {
                 printf("TOKEN_UPDATE WARNING: max_len causing early stop for req=%s\n", matched_req_id.c_str());
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 ctx_ref->Append(example_tk_id, true);
             }                 
             kv_cache_ref->free(matched_req_id);
@@ -162,10 +165,12 @@ void BatchInputPreparer::PrefillUpdate(int data_id, StringArray request_ids, std
         } else {
             if (example_tk_id == 0) {
                 printf("TOKEN_UPDATE ERROR: generated token_id=0 for req=%s, this is unusual, should check for nan & inf values.\n", matched_req_id.c_str());
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 ctx_ref->Append(example_tk_id, true);
                 kv_cache_ref->free(matched_req_id);
                 pool->SetReloadOn(data_id);
             } else {
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 bool suc = ctx_ref->Append(example_tk_id, false);
                 if (!suc) {
                     // ctx_ref终止生成
@@ -205,7 +210,7 @@ void BatchInputPreparer::PrefillUpdate(int data_id, StringArray request_ids, std
     }
 }
 
-void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref) {
+void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref, BatchLogitsRes top_logits_info) {
     std::vector<std::string> valid_request_ids;
     std::vector<std::string> invalid_request_ids;
 
@@ -276,6 +281,7 @@ void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std:
             int gen_len = req_item->current_length - ctx_ref->input_length;
             // 注意：这里eos时打印的batch_idx可能与prefill时不同，因为生成过程中不断有其他样本eos之后清空，使该样本的batch_idx可能减少。
             printf("TOKEN_UPDATE: EOS for req=%s, mini_bid=%i, start=%i, inp/gen=%i/%i\n", matched_req_id.c_str(), req_item->batch_idx, req_item->start_position, ctx_ref->input_length, gen_len);
+            top_logits_info.try_insert_logits(ctx_ref, prev_bid);
             ctx_ref->Append(example_tk_id, true);
             kv_cache_ref->free(matched_req_id);
             pool->SetReloadOn(data_id);
@@ -283,9 +289,11 @@ void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std:
         } else if (example_curlen >= example_maxlen ) { // 触发样本指定maxlen的终止条件。
             if (example_tk_id == 0) {
                 printf("TOKEN_UPDATE ERROR: generated token_id=0 for req=%s, this is unusual, should check for nan & inf values.\n", matched_req_id.c_str());
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 ctx_ref->Append(example_tk_id, true);
             } else {
                 printf("TOKEN_UPDATE WARNING: max_len causing early stop for req=%s\n", matched_req_id.c_str());
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 ctx_ref->Append(example_tk_id, true);
             }                 
             kv_cache_ref->free(matched_req_id);   
@@ -295,11 +303,13 @@ void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std:
         else { // 正常decode添加新token，以及当产生token_id=0（大概率推理错误，需要检查hiddens值）
             if (example_tk_id == 0) {
                 printf("TOKEN_UPDATE ERROR: generated token_id=0 for req=%s, this is unusual, should check for nan & inf values.\n", matched_req_id.c_str());
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 ctx_ref->Append(example_tk_id, true);
                 kv_cache_ref->free(matched_req_id);
                 pool->SetReloadOn(data_id);
                 req_item = (--this->decoding_examples.erase(req_item));
             } else {
+                top_logits_info.try_insert_logits(ctx_ref, prev_bid);
                 bool suc = ctx_ref->Append(example_tk_id, false);
                 if (!suc) {
                     // ctx_ref终止生成
@@ -338,33 +348,29 @@ void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std:
 }
 
 
-// void BatchInputPreparer::UploadInputs(bool is_prefill, int inp_gpu_id, int out_gpu_id, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, const Data& temperature, float* cpu_temperatures, const Data& seeds_tensor, int* cpu_seeds, const Data& top_ps, float* cpu_top_ps, int dynamic_bsz_check) {
-//     SetDevice(inp_gpu_id);
-//     // int dynamic_bl = (int)(this->input_bids.size());
-//     // int dynamic_bsz = (int)(this->input_starts.size()) - 1;
-//     int dynamic_bl = (int)(this->input_bids_ct);
-//     int dynamic_bsz = this->dynamic_bsz;
-//     if (dynamic_bsz != dynamic_bsz_check) {
-//         printf("PREPARER ERROR: request ids len obtained in prefill fetch (%i)!= (%i) dynamic_bsz implied in preparer's input_starts vector, check whether prepare is correct.\n", dynamic_bsz_check, dynamic_bsz);
-//     }
-//     int upload_ids_len = is_prefill ? dynamic_bl : dynamic_bsz;
-//     // int* cpu_input_ids = this->input_ids.data();
-//     // uint8_t* cpu_inp_bids = this->input_bids.data();
-//     // int* cpu_starts = this->input_starts.data();
-//     int* cpu_input_ids = this->input_ids;
-//     uint8_t* cpu_inp_bids = this->input_bids;
-//     int* cpu_starts = this->input_starts;
-//     QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)cpu_input_ids, inp_gpu_id, 0, 0, upload_ids_len);
-//     QuickUploadData(DataType::INT8, (void*)inp_batch_ids.cudaData, (uint8_t*)cpu_inp_bids, inp_gpu_id, 0, 0, dynamic_bl);
-//     QuickUploadData(DataType::INT32, (void*)query_pos_starts.cudaData, (uint8_t*)cpu_starts, inp_gpu_id, 0, 0, dynamic_bsz+1);
-//     QuickUploadData(DataType::INT32, (void*)key_pos_starts.cudaData, (uint8_t*)cpu_starts, inp_gpu_id, 0, 0, dynamic_bsz+1);
-//     // UploadCastFp32ToFp16Data((void*)temperature.cudaData, cpu_temperatures, gpu_id, 0, 0, dynamic_bsz);
-//     SetDevice(out_gpu_id);
-//     QuickUploadData(DataType::FLOAT32, (void*)temperature.cudaData, (uint8_t*)cpu_temperatures, out_gpu_id, 0, 0, dynamic_bsz);
-//     QuickUploadData(DataType::INT32, (void*)seeds_tensor.cudaData, (uint8_t*)cpu_seeds, out_gpu_id, 0, 0, dynamic_bsz);
-//     QuickUploadData(DataType::FLOAT32, (void*)top_ps.cudaData, (uint8_t*)cpu_top_ps, out_gpu_id, 0, 0, dynamic_bsz);
-//     SetDevice(inp_gpu_id);
-// }
+bool BatchInputPreparer::PrefillShouldReturnLogits(bool* batch_return_lgts) {
+    bool batch_return = false;
+    for (int bi=0; bi<this->prefill_return_lgts.size(); bi++) {
+        bool return_lgt = prefill_return_lgts[bi];
+        batch_return_lgts[bi] = return_lgt;
+        if (return_lgt) {
+            batch_return = true;
+        }
+    }
+    return batch_return;
+}
+
+bool BatchInputPreparer::DecodeShouldReturnLogits(bool* batch_return_lgts) {
+    bool batch_return = false;
+    for (int bi=0; bi<this->decode_return_lgts.size(); bi++) {
+        bool return_lgt = decode_return_lgts[bi];
+        batch_return_lgts[bi] = return_lgt;
+        if (return_lgt) {
+            batch_return = true;
+        }
+    }
+    return batch_return;
+}
 
 void BatchInputPreparer::UploadInputs(bool is_prefill, int inp_gpu_id, int out_gpu_id, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, const Data& temperature, const Data& seeds_tensor, const Data& top_ps, int dynamic_bsz_check) {
     SetDevice(inp_gpu_id);
@@ -373,6 +379,7 @@ void BatchInputPreparer::UploadInputs(bool is_prefill, int inp_gpu_id, int out_g
         int dynamic_bsz = this->prefill_bsz;
         int dynamic_bl = (int)(this->prefill_inp_ids.size());
         // printf("uploading prefills: dynamic_bl=%i, dynamic_bsz=%i, prefill_inp_ids[bl-1]=%i, starts[bsz]=%i\n", dynamic_bl, dynamic_bsz, this->prefill_inp_ids[dynamic_bl-1], this->prefill_starts[dynamic_bsz]);
+        // cpu embedding lookup，无需上传gpu input_ids
         // QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)(this->prefill_inp_ids.data()), inp_gpu_id, 0, 0, dynamic_bl);
         QuickUploadData(DataType::INT8, (void*)inp_batch_ids.cudaData, (uint8_t*)(this->prefill_bids.data()), inp_gpu_id, 0, 0, dynamic_bl);
         QuickUploadData(DataType::INT32, (void*)query_pos_starts.cudaData, (uint8_t*)(this->prefill_starts.data()), inp_gpu_id, 0, 0, dynamic_bsz+1);
@@ -384,6 +391,7 @@ void BatchInputPreparer::UploadInputs(bool is_prefill, int inp_gpu_id, int out_g
     } else {
         int dynamic_bsz = this->decode_bsz;
         int dynamic_bl = (int)(this->decode_bids.size());
+        // cpu embedding lookup，无需上传gpu input_ids
         // QuickUploadData(DataType::INT32, (void*)input_ids.cudaData, (uint8_t*)(this->decode_inp_ids.data()), inp_gpu_id, 0, 0, dynamic_bsz);
         QuickUploadData(DataType::INT8, (void*)inp_batch_ids.cudaData, (uint8_t*)(this->decode_bids.data()), inp_gpu_id, 0, 0, dynamic_bl);
         QuickUploadData(DataType::INT32, (void*)query_pos_starts.cudaData, (uint8_t*)(this->decode_starts.data()), inp_gpu_id, 0, 0, dynamic_bsz+1);
@@ -567,7 +575,7 @@ std::vector<AllocateParam> ContextPool::Reload(int data_id, std::string preparer
     std::stringstream  batch_info_joined;
 
     if (!list_.empty()) {
-        printf("trying to fetch from back of list, len=%i\n", (int)list_.size());
+        // printf("trying to fetch from back of list, len=%i\n", (int)list_.size());
         for (auto it_oldest = list_.rbegin(); it_oldest != list_.rend(); it_oldest++) {
 
             std::string ctx_id = ((*it_oldest).get())->value.request_id;

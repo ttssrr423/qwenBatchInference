@@ -252,8 +252,8 @@ class BatchInputPreparer {
 
     void AddPrefill(ResponseContext* ctx_ref);
 
-    void PrefillUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref);
-    void DecodeUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref);
+    void PrefillUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref, BatchLogitsRes top_logits_info);
+    void DecodeUpdate(int data_id, StringArray request_ids, std::vector<bool> is_eos, std::vector<int> token_ids, std::shared_ptr<ContextPool> pool, PipelineKVPool* kv_cache_ref, BatchLogitsRes top_logits_info);
 
     // void check_print() {
     //     // int bids_len = (int)(this->input_bids.size());
@@ -274,6 +274,8 @@ class BatchInputPreparer {
     // }
     // void UploadInputs(bool is_prefill, int inp_gpu_id, int out_gpu_id, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, const Data& temperature, float* cpu_temperatures, const Data& seeds_tensor, int* cpu_seeds, const Data& top_ps, float* cpu_top_ps, int dynamic_bsz);
     
+    bool PrefillShouldReturnLogits(bool* batch_return_lgts);
+    bool DecodeShouldReturnLogits(bool* batch_return_lgts);
     void UploadInputs(bool is_prefill, int inp_gpu_id, int out_gpu_id, const Data& input_ids, const Data& inp_batch_ids, const Data& query_pos_starts, const Data& key_pos_starts, const Data& temperature, const Data& seeds_tensor, const Data& top_ps, int dynamic_bsz_check);
 };
 

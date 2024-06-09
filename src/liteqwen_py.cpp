@@ -57,7 +57,8 @@ extern "C" {
             }
         }
 
-        liteqwen::GenerationConfig config = liteqwen::GenerationConfig{top_p, top_k, temperature, applied_maxlen, max_new_tokens, adapter, seed};
+        int fixed_top_k = 32; // use fixed top k instead, same as Qwen2Params
+        liteqwen::GenerationConfig config = liteqwen::GenerationConfig{top_p, fixed_top_k, temperature, applied_maxlen, max_new_tokens, adapter, seed};
         std::vector<int> inp_ids = std::vector<int>();
         for (int i=0; i<input_length; i++) {
             inp_ids.push_back(input_ids[i]);

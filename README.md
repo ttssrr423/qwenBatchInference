@@ -16,7 +16,7 @@ master代码仅针对qwen1.5-14b-chat-int4-gptq进行的推理加速，如果更
 peft版本0.4.0之后，需要注意lora模型的`adapter_config.json`中`"use_rslora": false`参数，需要为`false`才能推理结果正确。如果为true，lora scale计算时需要增加sqrt操作，需要修改`src/forward_gpu.cu`里的对应方法。
 
 ### 推理性能对比
-条件：单卡v100，16并发，input token数44，平均reply字符数235，max_sequence_length(max-model-len)=4096。无加载lora
+条件：单卡v100，16并发，input token数44，平均reply字符数230，max_sequence_length(max-model-len)=4096。无加载lora
 
 vllm吞吐量：419字符/秒，显存占用14.8G (--gpu-memory-utilization 限制)
 
@@ -60,6 +60,59 @@ ROUND_NUM = 5
 
 请求体格式可以参照`python mock_cli.py`里，也可以查看`scripts/liteqwen_py/connector.py`、`serving/app.py`以及`serving/liteqwen_inferer.py`。目前`return_logits`参数暂未实装。
 
+### 请求样例
+以configuration.json中使用本地8081端口为例
+
+流式地址：`http://127.0.0.1:8081/stream_chat_post`
+
+非流式地址：`http://127.0.0.1:8081/chat`
+
+简单请求体
+
+```
+{
+    "request_id":"req000003",
+    "query": "你好啊，你是谁？",
+    "history": [],
+    "gen_kwargs": {
+        "temperature": 0.9
+    }
+}
+```
+
+request_id需要每个请求不相同，否则结果写入会有冲突。如果不给则会随机分配。
+
+query的默认role是"user"，也可以指定其他role，例如`{"query": "你好啊，你是谁？", "role": "observation"}`
+
+history如果不为空，样例如下：
+```
+"history" : [
+    {"role": "system", "content": "你是一个乐于助人的AI助手。"},
+    {"role": "user", "content": "第一轮用户输入"},
+    {"role": "assistant", "content": "第一轮bot回复"}
+]
+```
+list中第一项system信息如果不给，会自动按照tokenizer的jinja template填入qwen 1.5模型的默认system信息。
+
+gen_kwargs目前支持的参数如下：
+
+```
+"gen_kwargs": {
+    "temperature" : 0.9, // 温度，默认见configuration.json
+    "return_logits": true, // 是否返回每个token的top_k token id以及logits，默认false。top_k固定32
+    "max_length": 256, // 请求的输入+输出最长token数，尽量给小一些。一般和max_new_tokens二选一提供。如果都不提供则默认按照configuration中配置的最大长度，以bsz=1推理。
+    "max_new_tokens": 128, // 回复最长token数，如果和max_length一起提供，则按照计算input token数后二者最短的一种进行eos截断。
+    "top_p": 0.9, // 默认见configuration.json
+    "prefix_token_ids": [3837] // int list，length=N。手动提供前N个回复token_id，用于引导生成。默认空
+}
+```
+
+prefix_token_ids默认空list，正常生成，如果提问 "你好啊，你是谁？"，则bot回复以 "你好！我是通义千问，..." 为开头。
+
+如果提供 [3837] (对应token "我")，且降低temperature，则bot回复以 "我是通义千问，..." 为开头。
+
+可以结合`{"max_new_tokens": 2, "prefix_token_ids": [xx, xx, xx], "temperature":0.01}`的参数组合，让大模型做ABCD选择题，且稳定在回复开头解析答案。
+
 ### 实现设计
 模型大致架构如下：
 ![alt dp=2,pp=2](scripts/pics/001.PNG "dp=2,pp=2")
@@ -67,6 +120,8 @@ ROUND_NUM = 5
 顶层是python web框架封装，调用c++ lib，lib内包含存储输入与输出结果的池，各data_id线程负责data parallel推理。KV缓存按照pipeline parallel的stage分别存储在不同GPU，模型参数也按照layer切分策略平摊到pipeline_parallel_size张gpu上。目前没有做pipeline parallel的interleaving推理，这样意味着kv-cache与activation都会显著增加。不适合v100 16G这种算力还行但显存不足的卡。
 
 tensor parallel推理目前也不支持，量化+tp需要大量修改，以后有需求时才考虑。
+
+所有prompt相关操作，都在python端执行，c++端只接受input_ids以及其他input参数，返回也仅限token_ids，解码以及封装都在python端。
 
 模型参数加载完成后会执行一次warmup推理，进行预分配，以及验证是否有足够显存推理当前max_length。warmup默认使用lora配置的第一个模型，**所以尽量把r=lora rank最大的模型放到第一个lora**。
 

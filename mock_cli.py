@@ -2,9 +2,10 @@ import json
 # import websocket    # pip install websocket-client
 from multiprocessing import Process
 import datetime
+import random
 
 LOCAL_URL = "http://127.0.0.1:8081"
-PARALLEL_NUM = 1
+PARALLEL_NUM = 16
 ROUND_NUM = 5
 
 def single_id_request(_id):
@@ -33,7 +34,8 @@ def stream_post(inps):
     # data = {"query": "那你明年多大啊？", "history": [["你好，你多大了", f"我{req_id+1}岁啦！"]]}  # "request_id":"REQ"+str(req_id)
     # lora_name = "skip" if random.random() < 0.5 else "default"
     lora_name = "skip"
-    data.update({"gen_kwargs":{"max_length":256, "temperature":0.01, "adapter_name": lora_name}})
+    return_lgt = False # True if random.random() > 0.5 else False
+    data.update({"gen_kwargs":{"max_length":256, "temperature":0.01, "adapter_name": lora_name, "return_logits":return_lgt}})
     print(f"submitted: {req_id}")
     stream_res = requests.post(LOCAL_URL+"/stream_chat_post", data=json.dumps(data), stream=True) # headers=headers,
     msg_ct = 0

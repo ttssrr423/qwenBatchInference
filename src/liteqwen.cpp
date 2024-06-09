@@ -198,21 +198,23 @@ liteqwen::Response get_generated(std::string request_id, bool is_incremental, bo
 
         int prev_len = ctx_ptr->prev_length;
         int cur_len = ctx_ptr->current_length;
-        int resp_len = cur_len - ctx_ptr->input_length;
+        int inp_len = ctx_ptr->input_length;
+        int resp_len = cur_len - inp_len;
+        int top_k = ctx_ptr->generation_config.top_k;
         std::vector<int> response_token_list;
         if (is_incremental) {
             response_token_list = std::vector<int>((ctx_ptr->tokens).begin() + prev_len, (ctx_ptr->tokens).begin() + cur_len);
         } else {
-            response_token_list = std::vector<int>((ctx_ptr->tokens).begin() + ctx_ptr->input_length, (ctx_ptr->tokens).begin() + cur_len);
+            response_token_list = std::vector<int>((ctx_ptr->tokens).begin() + inp_len, (ctx_ptr->tokens).begin() + cur_len);
         }
 
         std::vector<liteqwen::TopLogitsInfo> response_token_logits;
         if (ctx_ptr->return_logits) {
-            int lgt_start_offset = (prev_len - ctx_ptr->input_length) * (ctx_ptr->generation_config.top_k);
-            int lgt_end_offset = (cur_len - ctx_ptr->input_length) * (ctx_ptr->generation_config.top_k);
+            int lgt_start_offset = (prev_len - inp_len) * top_k;
+            int lgt_end_offset = (cur_len - inp_len) * top_k;
             if (lgt_end_offset <= ctx_ptr->token_logits.size()) {
                 response_token_logits = std::vector<liteqwen::TopLogitsInfo>((ctx_ptr->token_logits).begin()+lgt_start_offset, (ctx_ptr->token_logits).begin()+lgt_end_offset);
-                // printf("return with incremental logits[%i:%i]\n", lgt_start_offset, lgt_end_offset);
+                // printf("return with incremental logits[%i:%i], top_k=%i\n", lgt_start_offset, lgt_end_offset, top_k);
             } else {
                 printf("something wrone with logit offset calculation, total_size=%i, start_offset=%i, end_offset=%i, top_k=%i\n", ctx_ptr->token_logits.size(), prev_len - ctx_ptr->input_length, cur_len - ctx_ptr->input_length, ctx_ptr->generation_config.top_k);
                 response_token_logits = std::vector<liteqwen::TopLogitsInfo>();
