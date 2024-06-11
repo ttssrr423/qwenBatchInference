@@ -124,7 +124,7 @@ __global__ void batch_gqa_decode_score(int block_bound, float* scores, __half* q
         int kv_read_shift = (bl_id - start_pos) * channel * kv_heads + kv_head_id * channel + tid;
         int q_read_shift = batch_id * channel * query_heads + q_head_id * channel + tid;
         
-        float prod = __half2float(key_data_start[kv_read_shift]) * __half2float(query[q_read_shift]);
+        float prod = __half2float(key_data_start[kv_read_shift] * query[q_read_shift]);
         sdata[tid] = prod;
         __syncthreads();
 
@@ -930,8 +930,8 @@ void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& 
     const int grid_bound = 12288;
     const int min_block_size = 32;
 
-    // float* score_data = (float*)scores.cudaData;
-    __half* score_data = (__half*)scores.cudaData;
+    float* score_data = (float*)scores.cudaData;
+    // __half* score_data = (__half*)scores.cudaData;
     // __half* bhld_value_data = (__half*)bhld_value.cudaData;
     __half* query_data = (__half*) query.cudaData;
     void** cache_ptr_data = (void**)cache_start_ptrs.cudaData;
@@ -942,11 +942,11 @@ void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& 
     if (block_num > grid_bound) {
         dim3 dimGrid(grid_bound);
         dim3 dimBlock(128);
-        batch_gqa_decode_scoreFp16<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);
+        batch_gqa_decode_score<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);
     } else {
         dim3 dimGrid(block_num);
         dim3 dimBlock(128);
-        batch_gqa_decode_scoreFp16<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);     
+        batch_gqa_decode_score<128, grid_bound><<<dimGrid, dimBlock>>>(block_num, score_data, query_data, cache_ptr_data, dynamic_bsz, bl_batch_mapping_data, batch_start_data, query_heads, kv_heads, batch_maxt, dim_sqrt);     
     }
     // scores.const_print(std::string("scores"));
 
@@ -961,15 +961,15 @@ void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& 
     // printf("batch_maxt=%i -> (powers=%i, folds=%i). dynamic_bsz=%i\n", batch_maxt, powers, folds, dynamic_bsz);
     // 使用flash_attention的方式融合了softmax以及matmul(prob, values)
     if (powers <= min_block_size) { // 32
-        SoftmaxFuseDecodeAttnKernelFp16<min_block_size, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernel<min_block_size, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else if (powers <= min_block_size*2) { // 64
-        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*2, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernel<min_block_size*2, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else if (powers <= min_block_size*4) { //128
-        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*4, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernel<min_block_size*4, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else if (powers <= min_block_size*8) { // 256
-        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*8, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernel<min_block_size*8, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     } else { //512
-        SoftmaxFuseDecodeAttnKernelFp16<min_block_size*16, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
+        SoftmaxFuseDecodeAttnKernel<min_block_size*16, 128, block_size, block_channel_ratio><<<decodeGrid, decodeBlock>>>(out_data, score_data, cache_ptr_data, batch_start_data, query_heads, kv_heads);
     }
 }
 
@@ -1104,6 +1104,7 @@ void quant4_lora_linear_fwd(const liteqwen::Data& out_tensor, const liteqwen::Da
 
         // ========= loraB =========
         // loraA_out.const_print(std::string("loraA_out"));
+
         cudaDataType_t LB_AType, LB_BType, LB_CType, LB_ComputeType;
         LB_AType = LB_BType = LB_CType = LB_ComputeType = CUDA_R_32F;
         cublasStatus_t lb_status = cublasGemmEx(handle,

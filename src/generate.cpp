@@ -129,8 +129,8 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
     Data k_proj_layer_tiled = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, channels*attention_heads}, -1, true); // 只在gqa prefill时使用，给cutlass flash attention
     Data v_proj_layer_tiled = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, channels*attention_heads}, -1, true); // 只在gqa prefill时使用，给cutlass flash attention
     Data flash_attn_workspace = Data(DataType::FLOAT32, std::vector<int>{1, static_cast<int>(static_L), attention_heads, channels}, -1, true); // 只在flash attention的output非fp32时被使用
-    // Data scores = Data(DataType::FLOAT32, std::vector<int>{dynamic_bl, attention_heads}, -1, true); // 只在decode attention时使用，注意并非dynamic_L，而是dynamic_bl。
-    Data scores = Data(DataType::FLOAT16, std::vector<int>{dynamic_bl, attention_heads}, -1, true); // 只在decode attention时使用，注意并非dynamic_L，而是dynamic_bl。
+    Data scores = Data(DataType::FLOAT32, std::vector<int>{dynamic_bl, attention_heads}, -1, true); // 只在decode attention时使用，注意并非dynamic_L，而是dynamic_bl。
+    // Data scores = Data(DataType::FLOAT16, std::vector<int>{dynamic_bl, attention_heads}, -1, true); // 只在decode attention时使用，注意并非dynamic_L，而是dynamic_bl。
     Data attended_out = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, hidden_size}, -1, true);
     Data dense_out =  Data(DataType::FLOAT16, std::vector<int>{dynamic_L, hidden_size}, -1, true);
     Data post_normalized_hidden = Data(DataType::FLOAT16, std::vector<int>{dynamic_L, hidden_size}, -1, true);
@@ -172,6 +172,7 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
     for (int ii=0; ii<7; ii++){
         lora_enabled[ii] = false;
     }
+    // printf("forward lora is %s, rank=%i\n", lora_cfg.model_name.c_str(), (int)(lora_cfg.target_modules.size()));
     if (lora_cfg.model_name != std::string("skip") && (int)(lora_cfg.target_modules.size()) > 0) {
         // lora模块限制在以下7层：q_proj, k_proj, v_proj, o_proj, up_proj, gate_proj, down_proj
         // printf("using lora with %i layers\n", lora_cfg.target_modules.size());
@@ -865,6 +866,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
             // 选择lora
             std::string prefill_lora_name = batch_inp_preparer->GetLoraName();
             LoraConfig prefill_lora_cfg = GetLora(prefill_lora_name, prefill_lora_name, lora_meta);
+            // printf("lora for prefill is %s\n", prefill_lora_cfg.model_name.c_str());
 
             // 上传inputs， forward，以及清空preparer的信息（为BatchUpdate后的decode inputs清理lists）。
             bool batch_return_lgts = batch_inp_preparer->PrefillShouldReturnLogits(cpu_return_logits);

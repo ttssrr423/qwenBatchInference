@@ -69,6 +69,7 @@ void BatchInputPreparer::AddPrefill(ResponseContext* ctx_ref) { // std::string r
             printf("ERROR: Lora name obtained by InputPreparer's prev decoding is %s, not equal to adapter_name in context %s. This should not happen, but inference will continue though result may not be accurate. lora is switchable whence all_eos achieved in the batch.\n", this->batch_lora_name.c_str(), ctx_ref->generation_config.adapter_name.c_str());
         }
     }
+    this->all_eos = false;
 }
 
 
