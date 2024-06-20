@@ -59,7 +59,7 @@ include_directories(src/exllama/cuda_func)
 include_directories(src/exllama)
 # message(STATUS "CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES " ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
 
-set(LITEQWEN_CUDA_SOURCES src/core_gpu.cu src/forward_gpu.cu src/sampling.cu)
+set(LITEQWEN_CUDA_SOURCES src/core_gpu.cu src/forward_gpu.cu src/sampling.cu src/sgemm_lora.cu)
 set(LITEQWEN_LINKED_LIBS ${LITEQWEN_LINKED_LIBS} cublas)
 
 message(STATUS "LITEQWEN_LINKED_LIBS " ${LITEQWEN_LINKED_LIBS})

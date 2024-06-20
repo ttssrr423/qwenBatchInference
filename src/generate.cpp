@@ -5,6 +5,7 @@
 #include "cutlass_fmha/xformer_attention.h"
 #include "exllama/exllama_liteqwen_ext.h"
 #include "sampling.cuh"
+#include "sgemm_lora.cuh"
 
 std::mutex dp_locker;
 
@@ -164,6 +165,7 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
     Data up_proj_fp32_inp = Data();
     Data up_proj_A_hidden = Data();
     Data up_proj_B_hidden = Data();
+    const bool use_fused_lora = true;
 
     std::string adapter_name = std::string("skip");
     int lora_r = 0;
@@ -281,46 +283,68 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
 
         q_proj_layer.Reallocate(current_device, should_reallocate, static_L*hidden_size);
         if (lora_r > 0 && lora_enabled[0]) {
-            qproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
-            qproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*hidden_size);
-            qproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
             // lora名称样例：'base_model.model.model.layers.9.self_attn.v_proj.lora_A.weight'
             std::string qproj_loraA_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.q_proj.lora_A.") + adapter_name + std::string(".weight");
             std::string qproj_loraB_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.q_proj.lora_B.") + adapter_name + std::string(".weight");
-            quant4_lora_linear_fwd(q_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.q_proj")].second, (*weights)[layer_prefix+std::string("self_attn.q_proj.bias")], true, qproj_fp32_inp, qproj_loraA_hidden, qproj_loraB_hidden, (*weights)[qproj_loraA_key], (*weights)[qproj_loraB_key], lora_r, lora_scaling);
-            qproj_loraA_hidden.Free(should_free);
-            qproj_loraB_hidden.Free(should_free);
-            qproj_fp32_inp.Free(should_free);
+
+            if (!use_fused_lora) {
+                // 旧cublas lora计算，显存占用过多，弃用。
+                qproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                qproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*hidden_size);
+                qproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
+                quant4_lora_linear_fwd(q_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.q_proj")].second, (*weights)[layer_prefix+std::string("self_attn.q_proj.bias")], true, qproj_fp32_inp, qproj_loraA_hidden, qproj_loraB_hidden, (*weights)[qproj_loraA_key], (*weights)[qproj_loraB_key], lora_r, lora_scaling);
+                qproj_loraA_hidden.Free(should_free);
+                qproj_loraB_hidden.Free(should_free);
+                qproj_fp32_inp.Free(should_free);
+            } else {
+                qproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                quant4_lora_linear_fused(q_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.q_proj")].second, (*weights)[layer_prefix+std::string("self_attn.q_proj.bias")], true, qproj_loraA_hidden, (*weights)[qproj_loraA_key], (*weights)[qproj_loraB_key], lora_r, lora_scaling);
+                qproj_loraA_hidden.Free(should_free);
+            }
         } else {
             quant4_linear_fwd(q_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.q_proj")].second, (*weights)[layer_prefix+std::string("self_attn.q_proj.bias")], true);
         }
 
         k_proj_layer.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
         if (lora_r > 0 && lora_enabled[1]) {
-            kproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
-            kproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
-            kproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
             std::string kproj_loraA_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.k_proj.lora_A.") + adapter_name + std::string(".weight");
             std::string kproj_loraB_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.k_proj.lora_B.") + adapter_name + std::string(".weight");
-            quant4_lora_linear_fwd(k_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.k_proj")].second, (*weights)[layer_prefix+std::string("self_attn.k_proj.bias")], true, kproj_fp32_inp, kproj_loraA_hidden, kproj_loraB_hidden, (*weights)[kproj_loraA_key], (*weights)[kproj_loraB_key], lora_r, lora_scaling);
-            kproj_loraA_hidden.Free(should_free);
-            kproj_loraB_hidden.Free(should_free);
-            kproj_fp32_inp.Free(should_free);
+
+            if (!use_fused_lora) {
+                kproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                kproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
+                kproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
+                quant4_lora_linear_fwd(k_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.k_proj")].second, (*weights)[layer_prefix+std::string("self_attn.k_proj.bias")], true, kproj_fp32_inp, kproj_loraA_hidden, kproj_loraB_hidden, (*weights)[kproj_loraA_key], (*weights)[kproj_loraB_key], lora_r, lora_scaling);
+                kproj_loraA_hidden.Free(should_free);
+                kproj_loraB_hidden.Free(should_free);
+                kproj_fp32_inp.Free(should_free);
+            } else {
+                kproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                quant4_lora_linear_fused(k_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.k_proj")].second, (*weights)[layer_prefix+std::string("self_attn.k_proj.bias")], true, kproj_loraA_hidden, (*weights)[kproj_loraA_key], (*weights)[kproj_loraB_key], lora_r, lora_scaling);
+                kproj_loraA_hidden.Free(should_free);
+            }
         } else {
             quant4_linear_fwd(k_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.k_proj")].second, (*weights)[layer_prefix+std::string("self_attn.k_proj.bias")], true);
         }
 
         v_proj_layer.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
         if (lora_r > 0 && lora_enabled[2]) {
-            vproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
-            vproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
-            vproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
             std::string vproj_loraA_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.v_proj.lora_A.") + adapter_name + std::string(".weight");
             std::string vproj_loraB_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.v_proj.lora_B.") + adapter_name + std::string(".weight");
-            quant4_lora_linear_fwd(v_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.v_proj")].second, (*weights)[layer_prefix+std::string("self_attn.v_proj.bias")], true, vproj_fp32_inp, vproj_loraA_hidden, vproj_loraB_hidden, (*weights)[vproj_loraA_key], (*weights)[vproj_loraB_key], lora_r, lora_scaling);
-            vproj_loraA_hidden.Free(should_free);
-            vproj_loraB_hidden.Free(should_free);
-            vproj_fp32_inp.Free(should_free);
+
+            if (!use_fused_lora) {
+                vproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                vproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
+                vproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*channels*kv_heads);
+                quant4_lora_linear_fwd(v_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.v_proj")].second, (*weights)[layer_prefix+std::string("self_attn.v_proj.bias")], true, vproj_fp32_inp, vproj_loraA_hidden, vproj_loraB_hidden, (*weights)[vproj_loraA_key], (*weights)[vproj_loraB_key], lora_r, lora_scaling);
+                vproj_loraA_hidden.Free(should_free);
+                vproj_loraB_hidden.Free(should_free);
+                vproj_fp32_inp.Free(should_free);
+            } else {
+                vproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                quant4_lora_linear_fused(v_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.v_proj")].second, (*weights)[layer_prefix+std::string("self_attn.v_proj.bias")], true, vproj_loraA_hidden, (*weights)[vproj_loraA_key], (*weights)[vproj_loraB_key], lora_r, lora_scaling);
+                vproj_loraA_hidden.Free(should_free);
+            }
         } else {
             quant4_linear_fwd(v_proj_layer, normalized_hidden, (*quant4_meta)[layer_prefix+std::string("self_attn.v_proj")].second, (*weights)[layer_prefix+std::string("self_attn.v_proj.bias")], true);
         }
@@ -400,15 +424,22 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
         
         dense_out.Reallocate(current_device, should_reallocate, static_L*hidden_size);
         if (lora_r > 0 && lora_enabled[3]) {
-            oproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
-            oproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*hidden_size);
-            oproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
             std::string oproj_loraA_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.o_proj.lora_A.") + adapter_name + std::string(".weight");
             std::string oproj_loraB_key = std::string("base_model.model.") + layer_prefix + std::string("self_attn.o_proj.lora_B.") + adapter_name + std::string(".weight");
-            quant4_lora_linear_fwd(dense_out, attended_out, (*quant4_meta)[layer_prefix+std::string("self_attn.o_proj")].second, (*weights)[layer_prefix+std::string("self_attn.o_proj.bias")], true, oproj_fp32_inp, oproj_loraA_hidden, oproj_loraB_hidden, (*weights)[oproj_loraA_key], (*weights)[oproj_loraB_key], lora_r, lora_scaling);
-            oproj_loraA_hidden.Free(should_free);
-            oproj_loraB_hidden.Free(should_free);
-            oproj_fp32_inp.Free(should_free);
+
+            if (!use_fused_lora) {
+                oproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                oproj_loraB_hidden.Reallocate(current_device, should_reallocate, static_L*hidden_size);
+                oproj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
+                quant4_lora_linear_fwd(dense_out, attended_out, (*quant4_meta)[layer_prefix+std::string("self_attn.o_proj")].second, (*weights)[layer_prefix+std::string("self_attn.o_proj.bias")], true, oproj_fp32_inp, oproj_loraA_hidden, oproj_loraB_hidden, (*weights)[oproj_loraA_key], (*weights)[oproj_loraB_key], lora_r, lora_scaling);
+                oproj_loraA_hidden.Free(should_free);
+                oproj_loraB_hidden.Free(should_free);
+                oproj_fp32_inp.Free(should_free);
+            } else {
+                oproj_loraA_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                quant4_lora_linear_fused(dense_out, attended_out, (*quant4_meta)[layer_prefix+std::string("self_attn.o_proj")].second, (*weights)[layer_prefix+std::string("self_attn.o_proj.bias")], true, oproj_loraA_hidden, (*weights)[oproj_loraA_key], (*weights)[oproj_loraB_key], lora_r, lora_scaling);
+                oproj_loraA_hidden.Free(should_free);
+            }
         } else {
             quant4_linear_fwd(dense_out, attended_out, (*quant4_meta)[layer_prefix+std::string("self_attn.o_proj")].second, (*weights)[layer_prefix+std::string("self_attn.o_proj.bias")], true);
         }
@@ -428,30 +459,44 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
             timer->regist(std::string("mlp_first")+std::to_string(layer_id));
         mlp_intermediate.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
         if (lora_r > 0 && lora_enabled[4]) {
-            up_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
-            up_proj_B_hidden.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
-            up_proj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
             std::string up_proj_A_key = std::string("base_model.model.") + layer_prefix + std::string("mlp.up_proj.lora_A.") + adapter_name + std::string(".weight");
             std::string up_proj_B_key = std::string("base_model.model.") + layer_prefix + std::string("mlp.up_proj.lora_B.") + adapter_name + std::string(".weight");
-            quant4_lora_linear_fwd(mlp_intermediate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.up_proj")].second, (*weights)[layer_prefix+std::string("mlp.up_proj.bias")], true, up_proj_fp32_inp, up_proj_A_hidden, up_proj_B_hidden, (*weights)[up_proj_A_key], (*weights)[up_proj_B_key], lora_r, lora_scaling);
-            up_proj_A_hidden.Free(should_free);
-            up_proj_B_hidden.Free(should_free);
-            up_proj_fp32_inp.Free(should_free);
+
+            if (!use_fused_lora) {
+                up_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                up_proj_B_hidden.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
+                up_proj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
+                quant4_lora_linear_fwd(mlp_intermediate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.up_proj")].second, (*weights)[layer_prefix+std::string("mlp.up_proj.bias")], true, up_proj_fp32_inp, up_proj_A_hidden, up_proj_B_hidden, (*weights)[up_proj_A_key], (*weights)[up_proj_B_key], lora_r, lora_scaling);
+                up_proj_A_hidden.Free(should_free);
+                up_proj_B_hidden.Free(should_free);
+                up_proj_fp32_inp.Free(should_free);
+            } else {
+                up_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                quant4_lora_linear_fused(mlp_intermediate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.up_proj")].second, (*weights)[layer_prefix+std::string("mlp.up_proj.bias")], true, up_proj_A_hidden, (*weights)[up_proj_A_key], (*weights)[up_proj_B_key], lora_r, lora_scaling);
+                up_proj_A_hidden.Free(should_free);
+            }
         } else {
             quant4_linear_fwd(mlp_intermediate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.up_proj")].second, (*weights)[layer_prefix+std::string("mlp.up_proj.bias")], true);
         }
 
         mlp_gate.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
         if (lora_r > 0 && lora_enabled[5]) {
-            gate_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
-            gate_proj_B_hidden.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
-            gate_proj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
             std::string gate_proj_A_key = std::string("base_model.model.") + layer_prefix + std::string("mlp.gate_proj.lora_A.") + adapter_name + std::string(".weight");
             std::string gate_proj_B_key = std::string("base_model.model.") + layer_prefix + std::string("mlp.gate_proj.lora_B.") + adapter_name + std::string(".weight");
-            quant4_lora_linear_fwd(mlp_gate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.gate_proj")].second, (*weights)[layer_prefix+std::string("mlp.gate_proj.bias")], true, gate_proj_fp32_inp, gate_proj_A_hidden, gate_proj_B_hidden, (*weights)[gate_proj_A_key], (*weights)[gate_proj_B_key], lora_r, lora_scaling);
-            gate_proj_A_hidden.Free(should_free);
-            gate_proj_B_hidden.Free(should_free);
-            gate_proj_fp32_inp.Free(should_free);
+
+            if (!use_fused_lora) {
+                gate_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                gate_proj_B_hidden.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
+                gate_proj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*hidden_size);
+                quant4_lora_linear_fwd(mlp_gate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.gate_proj")].second, (*weights)[layer_prefix+std::string("mlp.gate_proj.bias")], true, gate_proj_fp32_inp, gate_proj_A_hidden, gate_proj_B_hidden, (*weights)[gate_proj_A_key], (*weights)[gate_proj_B_key], lora_r, lora_scaling);
+                gate_proj_A_hidden.Free(should_free);
+                gate_proj_B_hidden.Free(should_free);
+                gate_proj_fp32_inp.Free(should_free);
+            } else {
+                gate_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                quant4_lora_linear_fused(mlp_gate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.gate_proj")].second, (*weights)[layer_prefix+std::string("mlp.gate_proj.bias")], true, gate_proj_A_hidden, (*weights)[gate_proj_A_key], (*weights)[gate_proj_B_key], lora_r, lora_scaling);
+                gate_proj_A_hidden.Free(should_free);
+            }
         } else {
             quant4_linear_fwd(mlp_gate, post_normalized_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.gate_proj")].second, (*weights)[layer_prefix+std::string("mlp.gate_proj.bias")], true);
         }
@@ -468,15 +513,22 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
             timer->regist(std::string("mlp_second")+std::to_string(layer_id));
         mlp_out.Reallocate(current_device, should_reallocate, static_L*hidden_size);
         if (lora_r > 0 && lora_enabled[6]) {
-            down_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
-            down_proj_B_hidden.Reallocate(current_device, should_reallocate, static_L*hidden_size);
-            down_proj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
             std::string down_proj_A_key = std::string("base_model.model.") + layer_prefix + std::string("mlp.down_proj.lora_A.") + adapter_name + std::string(".weight");
             std::string down_proj_B_key = std::string("base_model.model.") + layer_prefix + std::string("mlp.down_proj.lora_B.") + adapter_name + std::string(".weight");
-            quant4_lora_linear_fwd(mlp_out, mlp_act_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.down_proj")].second, (*weights)[layer_prefix+std::string("mlp.down_proj.bias")], true, down_proj_fp32_inp, down_proj_A_hidden, down_proj_B_hidden, (*weights)[down_proj_A_key], (*weights)[down_proj_B_key], lora_r, lora_scaling);
-            down_proj_A_hidden.Free(should_free);
-            down_proj_B_hidden.Free(should_free);
-            down_proj_fp32_inp.Free(should_free);
+
+            if (!use_fused_lora) {
+                down_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                down_proj_B_hidden.Reallocate(current_device, should_reallocate, static_L*hidden_size);
+                down_proj_fp32_inp.Reallocate(current_device, should_reallocate, static_L*ffn_hidden_size);
+                quant4_lora_linear_fwd(mlp_out, mlp_act_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.down_proj")].second, (*weights)[layer_prefix+std::string("mlp.down_proj.bias")], true, down_proj_fp32_inp, down_proj_A_hidden, down_proj_B_hidden, (*weights)[down_proj_A_key], (*weights)[down_proj_B_key], lora_r, lora_scaling);
+                down_proj_A_hidden.Free(should_free);
+                down_proj_B_hidden.Free(should_free);
+                down_proj_fp32_inp.Free(should_free);
+            } else {
+                down_proj_A_hidden.Reallocate(current_device, should_reallocate, static_L*lora_r);
+                quant4_lora_linear_fused(mlp_out, mlp_act_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.down_proj")].second, (*weights)[layer_prefix+std::string("mlp.down_proj.bias")], true, down_proj_A_hidden, (*weights)[down_proj_A_key], (*weights)[down_proj_B_key], lora_r, lora_scaling);
+                down_proj_A_hidden.Free(should_free);
+            }
         } else {
             quant4_linear_fwd(mlp_out, mlp_act_hidden, (*quant4_meta)[layer_prefix+std::string("mlp.down_proj")].second, (*weights)[layer_prefix+std::string("mlp.down_proj.bias")], true);
         }

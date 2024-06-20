@@ -228,7 +228,6 @@ bool ResponseContext::Append(int new_token, bool is_eos) {
     } else {
         this->repeat_ct = 0;
     }
-
     if (this->repeat_ct >= liteqwen::REPEAT_THRESHOLD) { // single token repeat check
         repeat_check_passed = false;
     } else { // window token repeat check
