@@ -48,7 +48,7 @@ void initDeviceProperty(DeviceIndex device_index) {
   device_properties[device_index] = device_prop;
 }
 
-cudaDeviceProp* getDeviceProperties(int64_t device) {
+cudaDeviceProp* getDeviceProperties2(int64_t device) {
   // std::call_once(init_flag, initCUDAContextVectors, world_size);
   // std::call_once(device_flags[device], initDeviceProperty, device);
   // std::call_once(device_flags[0], initDeviceProperty, device);
@@ -104,7 +104,7 @@ void xformer_self_attention_fwd(const liteqwen::Data& attended_tmp_out, const li
 	const bool compute_logsumexp = false; // true when needs_gradient
 	const int64_t custom_mask_type = 1; // no-mask = 0; CausalFromTopLeft=1; CausalFromBottomRight=2;
 
-    cudaDeviceProp* dp = at::cuda::getDeviceProperties(query.gpu_id);
+    cudaDeviceProp* dp = at::cuda::getDeviceProperties2(query.gpu_id);
     const int computeCapability = dp->major * 10 + dp->minor;
     // printf("compute compatibility = %i\n", computeCapability);
 
@@ -258,7 +258,7 @@ void xformer_self_attention_fwd_old(const liteqwen::Data& attended_tmp_out, cons
 	const bool compute_logsumexp = false; // true when needs_gradient
 	const int64_t custom_mask_type = 1; // no-mask = 0; CausalFromTopLeft=1; CausalFromBottomRight=2;
 
-    cudaDeviceProp* dp = at::cuda::getDeviceProperties(query.gpu_id);
+    cudaDeviceProp* dp = at::cuda::getDeviceProperties2(query.gpu_id);
     const int computeCapability = dp->major * 10 + dp->minor;
     // printf("compute compatibility = %i\n", computeCapability);
 
