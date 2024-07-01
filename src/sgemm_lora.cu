@@ -1,5 +1,6 @@
 #include "sgemm_lora.cuh"
 #include "exllama/exllama_liteqwen_ext.h"
+#include "vllm_gptq/q_gemm.cuh"
 
 // ================ inline functions ===============
 __device__ __forceinline__
@@ -1410,7 +1411,14 @@ void quant4_lora_linear_fused(const liteqwen::Data& out_tensor, const liteqwen::
     float* loraA_out_data = (float*)(loraA_out.cudaData);
 
     // gptq linear x @ WT + tiled(b)
-    q4_matmul(x, w_ref, out_tensor, handle);
+    // q4_matmul(x, w_ref, out_tensor, handle);
+
+    Q4Matrix* wm = reinterpret_cast<Q4Matrix*> (w_ref);
+    uint32_t* qweight_ref = wm->cuda_qweight;
+    uint32_t* qzeros_ref = wm->cuda_qzeros;
+    __half* scales_ref = wm->cuda_scales;
+    int groups = wm->groups;
+    gptq_gemm(out_tensor, x, qweight_ref, qzeros_ref, scales_ref, NULL, true, 4, groups, handle);
     if (use_bias) {
         dim3 dimBlock(32);
         dim3 dimGrid((int)(ceil((float)(n) / 32)));

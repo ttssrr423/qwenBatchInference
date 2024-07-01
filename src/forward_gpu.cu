@@ -13,6 +13,7 @@
 #include "core_gpu.cuh"
 #include "kv_cache.h"
 #include "exllama/exllama_liteqwen_ext.h"
+#include "q_gemm.cuh"
 
 std::map<int, std::pair<int, int>> reducePartitionLookup;
 
@@ -1032,7 +1033,26 @@ void quant4_linear_fwd(const liteqwen::Data& out_tensor, const liteqwen::Data& x
     }
     int m = static_cast<int>((out_tensor.numel() / n));
     cublasHandle_t handle = get_cublas_handler(x.gpu_id);
-    q4_matmul(x, w_ref, out_tensor, handle);
+
+    // q4_matmul(x, w_ref, out_tensor, handle);
+
+    // Q4Matrix fields
+    // int device;
+    // int height;
+    // int width;
+    // int groups;
+    // int groupsize;
+    // uint32_t* cuda_qweight = NULL;
+    // uint32_t* cuda_qzeros = NULL;
+    // half* cuda_scales = NULL;
+    // uint32_t* cuda_x_map = NULL;
+
+    Q4Matrix* wm = reinterpret_cast<Q4Matrix*> (w_ref);
+    uint32_t* qweight_ref = wm->cuda_qweight;
+    uint32_t* qzeros_ref = wm->cuda_qzeros;
+    __half* scales_ref = wm->cuda_scales;
+    int groups = wm->groups;
+    gptq_gemm(out_tensor, x, qweight_ref, qzeros_ref, scales_ref, NULL, true, 4, groups, handle);
     if (use_bias) {
         dim3 dimBlock(32);
         dim3 dimGrid((int)(ceil((float)(n) / 32)));
@@ -1058,14 +1078,23 @@ void quant4_lora_linear_fwd(const liteqwen::Data& out_tensor, const liteqwen::Da
     } else {
         k = x.shape[inp_dim_num-1];
     }
-    cublasHandle_t handle = get_cublas_handler(x.gpu_id);
+
     __half* out_data = (__half*)(out_tensor.cudaData);
 
     float* loraA_W_data = (float*)(loraA_W.cudaData);
     float* loraB_W_data = (float*)(loraB_W.cudaData);
     float* loraA_out_data = (float*)(loraA_out.cudaData);
 
-    q4_matmul(x, w_ref, out_tensor, handle);
+    cublasHandle_t handle = get_cublas_handler(x.gpu_id);
+    // q4_matmul(x, w_ref, out_tensor, handle);
+
+    Q4Matrix* wm = reinterpret_cast<Q4Matrix*> (w_ref);
+    uint32_t* qweight_ref = wm->cuda_qweight;
+    uint32_t* qzeros_ref = wm->cuda_qzeros;
+    __half* scales_ref = wm->cuda_scales;
+    int groups = wm->groups;
+    gptq_gemm(out_tensor, x, qweight_ref, qzeros_ref, scales_ref, NULL, true, 4, groups, handle);   
+
     if (use_bias) {
         dim3 dimBlock(32);
         dim3 dimGrid((int)(ceil((float)(n) / 32)));
@@ -1076,7 +1105,7 @@ void quant4_lora_linear_fwd(const liteqwen::Data& out_tensor, const liteqwen::Da
     if (m > 0) {
         float* fp32_x_data = (float*)(fp32_x.cudaData);
         float* loraB_out_data = (float*)(loraB_out.cudaData);
-
+        
         // ========= loraA =========
         int inp_numel = m*k;
         dim3 dimBlockTmp(256);

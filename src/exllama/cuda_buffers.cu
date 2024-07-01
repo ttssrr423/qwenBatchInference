@@ -64,6 +64,10 @@ void prepare_buffers_cuda
     g_buffers[_device] = buffers;
 }
 
+__half* get_temp_dq_ptr(int gpu_id) {
+    return g_buffers[gpu_id]->temp_dq;
+}
+
 void cleanup_buffers_cuda()
 {
     for (int i = 0; i < CUDA_MAX_DEVICES; i++)

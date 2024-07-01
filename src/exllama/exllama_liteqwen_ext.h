@@ -24,6 +24,9 @@ uintptr_t make_q4
     int device
 );
 
+
+// q4_matmul的推理速度落后vllm_gptq，所以弃用exllama的q4_matmul,只保留make_q4和prepare_buffers。
+// q4_matmul改用vllm_gptq/q_gemm.cuh下的gptq_gemm方法。
 void q4_matmul
 (
     const liteqwen::Data& x,
@@ -31,3 +34,5 @@ void q4_matmul
     const liteqwen::Data& out,
     cublasHandle_t handle
 );
+
+__half* get_temp_dq(int gpu_id);

@@ -81,7 +81,7 @@ class ContextPool {
     };
 
 
-    const int minimum_reload_interval = 20;
+    const int minimum_reload_interval = 2;
 
     public:
     // std::map<std::string, int> generating_ids; // request_id -> handle_id

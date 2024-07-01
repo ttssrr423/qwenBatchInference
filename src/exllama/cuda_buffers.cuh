@@ -52,4 +52,6 @@ void prepare_buffers_cuda
 
 void cleanup_buffers_cuda();
 
+__half* get_temp_dq_ptr(int gpu_id);
+
 #endif

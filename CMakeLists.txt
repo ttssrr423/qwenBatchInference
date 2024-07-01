@@ -57,6 +57,7 @@ include_directories(src/include/device)
 include_directories(src/cutlass_fmha)
 include_directories(src/exllama/cuda_func)
 include_directories(src/exllama)
+include_directories(src/vllm_gptq)
 # message(STATUS "CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES " ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
 
 set(LITEQWEN_CUDA_SOURCES src/core_gpu.cu src/forward_gpu.cu src/sampling.cu src/sgemm_lora.cu)
@@ -84,17 +85,22 @@ set(LITEQWEN_ATTN_SOURCES src/cutlass_fmha/xformer_attention.cu ${XFORMER_AUTOGE
 file(GLOB EXLLAMA_IMPL "src/exllama/cuda_func/q4_matrix.cu" "src/exllama/cuda_func/q4_matmul.cu" "src/exllama/cuda_func/column_remap.cu" "src/exllama/cuda_buffers.cu")
 set(LITEQWEN_QUANT_SOURCES src/exllama/exllama_liteqwen_ext.cpp ${EXLLAMA_IMPL})
 
+# compile vllm gptq
+set(LITEQWEN_QUANT_VLLM_SOURCES src/vllm_gptq/q_gemm.cu)
+
 # ====== python library and connector ==================
 add_library(liteqwen_conn SHARED
             ${LITEQWEN_CXX_SOURCES}
             ${LITEQWEN_CUDA_SOURCES}
             ${LITEQWEN_ATTN_SOURCES}
             ${LITEQWEN_QUANT_SOURCES}
+            ${LITEQWEN_QUANT_VLLM_SOURCES}
             src/liteqwen_py.cpp)
 target_compile_features(liteqwen_conn PUBLIC cuda_std_17)
 target_link_libraries(liteqwen_conn PUBLIC ${LITEQWEN_LINKED_LIBS} ${TORCH_LINKED_LIB})
 target_include_directories(liteqwen_conn PUBLIC third-party/cutlass/include third-party/cutlass/examples)
 target_include_directories(liteqwen_conn PUBLIC src/exllama)
+target_include_directories(liteqwen_conn PUBLIC src/vllm_gptq)
 
 target_compile_options(liteqwen_conn PUBLIC
     # $<$<COMPILE_LANGUAGE:CXX>:${CXX_FLAGS}>

@@ -1040,9 +1040,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        layer_id = 0
         for decoder_layer in self.layers:
-            layer_id += 1
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -1057,9 +1055,6 @@ class Qwen2Model(Qwen2PreTrainedModel):
                     use_cache,
                 )
             else:
-                if layer_id == 1 or layer_id == len(self.layers):
-                    print("aaa")
-
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=attention_mask,

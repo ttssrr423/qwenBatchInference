@@ -45,6 +45,10 @@ void prepare_buffers
     );
 }
 
+__half* get_temp_dq(int gpu_id) {
+    return get_temp_dq_ptr(gpu_id);
+}
+
 uintptr_t make_q4
 (
     const liteqwen::Data& qweight,

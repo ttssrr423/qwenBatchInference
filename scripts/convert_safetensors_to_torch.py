@@ -1,5 +1,5 @@
-dst_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_bin"
-src_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq"
+dst_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_newbin"
+src_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_new"
 
 torch_name = "pytorch_model-0000{0}-of-0000{1}.bin"
 safetensor_name = "model-0000{0}-of-0000{1}.safetensors"

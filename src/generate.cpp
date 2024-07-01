@@ -6,6 +6,7 @@
 #include "exllama/exllama_liteqwen_ext.h"
 #include "sampling.cuh"
 #include "sgemm_lora.cuh"
+#include "vllm_gptq/q_gemm.cuh"
 
 std::mutex dp_locker;
 
@@ -725,6 +726,11 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
         std::string prefix = quant_iter->first;
         int quant_device = quant_device_map[prefix];
         SetDevice(quant_device);
+        
+        // 只有使用vllm_gptq时需要初始化shuffle操作。推理速度比exllama的gptq kernel块一倍。
+        gptq_shuffle(weights[prefix+std::string(".qweight")], weights[prefix+std::string(".g_idx")], false, 4);
+        DeviceSynchronize();
+
         uintptr_t q4_ref = make_q4(weights[prefix+std::string(".qweight")], weights[prefix+std::string(".qzeros")], weights[prefix+std::string(".scales")], weights[prefix+std::string(".g_idx")], quant_device);
         quant_ref_dict[prefix] = std::make_pair(quant_device, q4_ref);
     }

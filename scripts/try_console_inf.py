@@ -4,8 +4,8 @@ device = "cuda:0"
 import json
 from transformers import GenerationConfig
 
-model_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_bin"
-# lora_path =  "/mnt/e/UbuntuFiles/models_saved/luban_instruction_dpo"
+model_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_newbin"
+lora_path =  "/mnt/e/UbuntuFiles/models_saved/ppt_outline_epoch3"
 default_gen_config = GenerationConfig()
 default_gen_config.temperature = 0.01
 
@@ -24,7 +24,7 @@ def inference():
         device_map="auto"
     )
     model.eval()
-    # model = PeftModel.from_pretrained(model, lora_path)
+    model = PeftModel.from_pretrained(model, lora_path)
 
     tokenizer = Qwen2TokenizerFast.from_pretrained(model_path, trust_remote_code=True)
 
@@ -46,7 +46,7 @@ def inference():
         else:
             prompt = inp_str.replace("\\\\n", "\n") # "�| 好�~U~J�~L�| �~X��~A�~_"
             messages = [
-                {"role": "system", "content": "You are a helpful assistant"},
+                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
             ]
 
