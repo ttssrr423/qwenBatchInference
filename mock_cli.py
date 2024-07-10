@@ -7,6 +7,8 @@ import random
 LOCAL_URL = "http://127.0.0.1:8081"
 PARALLEL_NUM = 16
 ROUND_NUM = 5
+USE_STREAM = False
+OUT_FILE = "test_results.txt" # None # "test_results.txt"
 
 def single_id_request(_id):
     import requests
@@ -30,7 +32,7 @@ def stream_post(inps):
     req_id, out_list, res_dict = inps[0], inps[1], inps[2]
 
     headers = {"Content-Type":"application/json", "cache-control":"no-cache"}
-    data = {"query":"你可以做什么？", "history":[["你好", "你好，我是小PAI，是人工智能机器人。"]]} # "request_id":"REQ"+str(req_id)
+    data = {"query":"你可以做什么？", "history":[["你好", "你好，我是小PAI，是人工智能机器人。"]],"request_id":"REQ"+str(req_id)} # "request_id":"REQ"+str(req_id)
     # data = {"query": "那你明年多大啊？", "history": [["你好，你多大了", f"我{req_id+1}岁啦！"]]}  # "request_id":"REQ"+str(req_id)
     # lora_name = "skip" if random.random() < 0.5 else "default"
     lora_name = "default"
@@ -59,66 +61,38 @@ def stream_post(inps):
         continue
     return 1
 
-def normal_request():
-    procs = []
-    for _ in range(5):
-        # print(name)
-        proc = Process(target=chat_request, args=())
-        procs.append(proc)
-        proc.start()
-    # complete the processes
-    for proc in procs:
-        proc.join()
+def chat_post(inps):
+    req_id, out_list, res_dict = inps[0], inps[1], inps[2]
+    headers = {"Content-Type":"application/json", "cache-control":"no-cache"}
+    data0 = {"query":"你可以做什么？", "history":[["你好", "你好，我是小PAI，是人工智能机器人。"]], "request_id":"REQ"+str(req_id)} # "request_id":"REQ"+str(req_id)
+    data1 = {"query": f"今天是星期三，{req_id}天之后是星期几？", "history":[], "request_id": "REQ"+str(req_id)} # "request_id":"REQ"+str(req_id)
+    data2 = {"query": "随便讲个笑话。", "history": [],
+            "request_id": "REQ" + str(req_id)}  # "request_id":"REQ"+str(req_id)
+    data3 = {"query": "为什么地球是圆的？", "history": [],
+            "request_id": "REQ" + str(req_id)}  # "request_id":"REQ"+str(req_id)
+    task_map = {0:data0, 1:data1, 2:data2, 3:data3}
+    data = task_map[int(req_id) % 4]
 
-def stream_post_request(round_num=1, parallel_num=1):
-    procs = []
-    from multiprocessing import Manager
-    manager = Manager()
-    overall_textlen = 0
-    overall_timesum = 0.0
-    while round_num > 0 or round_num < 0:
-        out_list = manager.list([])
-        stream_res_counter = manager.dict({})
-        t0 = datetime.datetime.now()
-        for _id in range(parallel_num):
-            # print(name)
-            proc = Process(target=stream_post, args=(tuple((_id, out_list, stream_res_counter)),))
-            procs.append(proc)
-            proc.start()
-
-        # complete the processes
-        for proc in procs:
-            proc.join()
-
-        textlens = out_list
-        batch_textlen = sum(textlens)
-        batch_time_sum = (datetime.datetime.now()-t0).total_seconds()
-        overall_textlen += batch_textlen
-        overall_timesum += batch_time_sum
-        empty_res_num = 0
-        fail_res_num = 0
-        for _id in range(parallel_num):
-            if _id in stream_res_counter:
-                frame_num = len(stream_res_counter[_id])
-                frame_textlens = [len(x) for x in stream_res_counter[_id]]
-                # print("frames and their textlen:", _id, frame_num, frame_textlens)
-                if (frame_num == 1 and frame_textlens[0] == 0):
-                    empty_res_num += 1
-                if (frame_num >= 1 and stream_res_counter[_id][-1].startswith("RUNTIME ERROR")):
-                    fail_res_num +=1
-            else:
-                # print("frames:", _id, 0)
-                empty_res_num += 1
-            # if len(stream_res_counter[_id]) < 50:
-            # if len(stream_res_counter[_id]) < 1:
-            #     single_id_request(_id)
-        round_num -= 1
-        print(f"req_nums={parallel_num}, empty_result={empty_res_num}, failed_result={fail_res_num}")
-        print(f"batch example num:{len(textlens)}, in {batch_time_sum} secs. lens={textlens}")
-        print("char per sec: ", batch_textlen/batch_time_sum)
-
-    print("=======final char per sec stat ========")
-    print(overall_textlen/overall_timesum)
+    lora_name = "default"
+    return_lgt = False # True if random.random() > 0.5 else False
+    max_length = random.randint(1000, 1200)
+    # max_length = 5120
+    data.update({"gen_kwargs":{"max_new_tokens":max_length, "temperature":0.01, "adapter_name": lora_name}})
+    
+    req_res = requests.post(LOCAL_URL+"/chat", data=json.dumps(data))
+    try:
+        ent = json.loads(req_res.text)
+        resp_text = ent["response"]
+        print(req_id, resp_text.replace("\n", "<s>"))
+        len_text = len(resp_text)
+        out_list.append(len_text)
+    
+        if OUT_FILE is not None:
+            with open(OUT_FILE, mode="a") as fw:
+                fw.write(json.dumps({"id":req_id, "text":resp_text}, ensure_ascii=False)+"\n")
+    except Exception as ex:
+        print(ex)
+    return 1
 
 import time
 def dummy_method(id):
@@ -143,7 +117,10 @@ def stream_pool_request(round_num=1, parallel_num=1):
     with ThreadPoolExecutor(max_workers=parallel_num) as executor:
         t0 = datetime.datetime.now()
         # tasks = [executor.submit(stream_post, (i, out_list, stream_res_counter)) for i in range(total_reqs)]
-        tasks = [executor.submit(stream_post, tuple((i, out_list, stream_res_counter))) for i in range(total_reqs)]
+        if USE_STREAM:
+            tasks = [executor.submit(stream_post, tuple((i, out_list, stream_res_counter))) for i in range(total_reqs)]
+        else:
+            tasks = [executor.submit(chat_post, tuple((i, out_list, stream_res_counter))) for i in range(total_reqs)]
         for future in as_completed(tasks):
             pass
 
@@ -178,7 +155,4 @@ def stream_pool_request(round_num=1, parallel_num=1):
         print(overall_textlen/overall_timesum)
 
 if __name__ == "__main__":  # confirms that the code is under main function
-    # stream_request()
-    # normal_request()
-    # stream_post_request(parallel_num=PARALLEL_NUM, round_num=ROUND_NUM)
     stream_pool_request(parallel_num=PARALLEL_NUM, round_num=ROUND_NUM)

@@ -433,22 +433,39 @@ void ContextPool::UnsafeDelete(std::string key) {
         std::deque<std::shared_ptr<ContextPool::Node>> del_nd(iter, res_list_.end());
         auto deleting_ctx = ((del_nd.front()).get())->value;
         finished_.erase(key);
-        printf("POOL: queue after cleaning %s remaining queue size=%i\n", key.c_str(), (int)(finished_.size()));
+        int finished_map_size = (int)(finished_.size());
+        int res_list_size = (int)(res_list_.size());
+        printf("POOL: queue after cleaning %s remaining res map/queue size=%i/%i\n", key.c_str(), finished_map_size, res_list_size);
         expired_callback_(key, deleting_ctx);
     }        
 }
 
 void ContextPool::DELETE(std::string key) {
     res_lock_.lock();
+
+    bool clear_res_list = false;
     // 删除指定key
     if (finished_.find(key) != finished_.end())
     {
         NodeIter iter = finished_[key];
         std::deque<std::shared_ptr<ContextPool::Node>> del_nd(iter, res_list_.end());
         auto deleting_ctx = ((del_nd.front()).get())->value;
-        finished_.erase(key);
-        printf("POOL: queue after cleaning %s remaining queue size=%i\n", key.c_str(), (int)(finished_.size()));
         expired_callback_(key, deleting_ctx);
+
+        for (auto itm_oldest=res_list_.rbegin(); itm_oldest !=res_list_.rend(); itm_oldest++) {
+            std::string req_id_in_list = (((*itm_oldest).get())->value).request_id;
+            if (req_id_in_list == key) {
+                res_list_.erase(--(itm_oldest.base()));
+            }
+        }
+        finished_.erase(key);
+        int finished_map_size = (int)(finished_.size());
+        int res_list_size = (int)(res_list_.size());
+        printf("POOL: queue after cleaning %s remaining res map/queue size=%i/%i\n", key.c_str(), finished_map_size, res_list_size);
+
+        if (finished_map_size == 0) {
+            clear_res_list = true;
+        }
     }
 
     //删除超时的res
@@ -466,6 +483,10 @@ void ContextPool::DELETE(std::string key) {
     for (std::string del_key :deleting_keys) {
         printf("liteqwen backend removing expired finished results %s.\n", del_key.c_str());
         this->UnsafeDelete(del_key);
+    }
+
+    if (clear_res_list) {
+        res_list_.clear();
     }
     res_lock_.unlock();
 }
@@ -657,7 +678,7 @@ std::vector<AllocateParam> ContextPool::Reload(int data_id, std::string preparer
     int reloaded_prefill_ct = (int)(tobe_allocated.size());
     
     if (reloaded_prefill_ct>0) {
-        printf("BATCHING: %i prefills in one batch, lora=%s, batch_info=%s\n", reloaded_prefill_ct, infering_lora.c_str(), batch_info_joined.str().c_str());
+        printf("BATCHING: %i prefills in batch at data_id=%i, lora=%s, batch_info=%s\n", reloaded_prefill_ct, data_id, infering_lora.c_str(), batch_info_joined.str().c_str());
     }
     batch_info_joined.clear();
     // 关闭reload持续reload_interval轮forward，或者直到任意样本eos时提前SetReloadOn.
