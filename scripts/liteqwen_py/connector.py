@@ -20,8 +20,10 @@ else:
 
 # (char* request_id, int input_length, int* input_ids, float top_p, int top_k, float temperature, int max_length, int max_new_tokens, 
 #    char* adapter_name, int seed, float mask_base_val, float mask_except_val, int except_ids_len, int* logit_except_ids, bool return_logits)
-liteqwen_lib.submit_request.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_float, ctypes.c_int, ctypes.c_float, ctypes.c_int, ctypes.c_int, 
+liteqwen_lib.submit_request.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_float, ctypes.c_int, ctypes.c_float, ctypes.c_int, ctypes.c_int,
     ctypes.c_char_p, ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_int, ctypes.c_void_p, ctypes.c_bool]
+
+liteqwen_lib.delete_request.argtypes = [ctypes.c_void_p]
 
 # (char *key, int shape_length, int *shape, int dtype, int oriDataType, void *oriData)
 liteqwen_lib.store_tensor.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
@@ -30,9 +32,10 @@ liteqwen_lib.store_tensor.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_vo
 liteqwen_lib.add_lora_adapter_config.argtypes = [ctypes.c_char_p, ctypes.c_bool, ctypes.c_float, ctypes.c_int, ctypes.c_char_p]
 
 # (int world_size, int data_parallel_size, int pipeline_parallel, char* json_config_path, int layer_num, int* block2device_list, int max_dynamic_bsz, int max_sequence_length, int max_queue_size, int timeout)
-liteqwen_lib.initialize_empty_qwen2.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+liteqwen_lib.initialize_empty_qwen2.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
 
 liteqwen_lib.start_loops.argtypes = []
+liteqwen_lib.start_loop_in_dp_id.argtypes = [ctypes.c_int]
 
 liteqwen_lib.get_frame.argtypes = [ctypes.c_char_p, ctypes.c_bool, ctypes.c_bool, ctypes.c_bool]
 liteqwen_lib.get_frame.restype = ctypes.POINTER(ctypes.c_int)
@@ -126,7 +129,7 @@ class GPTQLinearParamSet(object):
         return
 
 class Qwen2Inferer:
-    def __init__(self, model_path, world_size, data_parallel_size, pipeline_parallel_size, max_dynamic_bsz, max_length, top_p=0.8, top_k=50, temperature=0.8, use_lora=False, layer_to_device_list=None):
+    def __init__(self, model_path, world_size, data_parallel_size, pipeline_parallel_size, max_dynamic_bsz, max_length, top_p=0.8, top_k=50, temperature=0.8, use_lora=False, layer_to_device_list=None, token_smem_info=None):
         self.world_size = world_size
         self.data_parallel_size = data_parallel_size
         self.pipeline_parallel_size = pipeline_parallel_size
@@ -148,7 +151,11 @@ class Qwen2Inferer:
         #     self.maxlen_choices.append(min(_tmp_len * 2, self.max_length))
         #     _tmp_len = _tmp_len * 2
         # print(f"maxlen choices: {self.maxlen_choices}")
-
+        if isinstance(token_smem_info, dict):
+            py_smem_name, py_smem_size, record_length = token_smem_info["name"], token_smem_info["size_t"], token_smem_info["record_maxlen"]
+        else:
+            py_smem_name, py_smem_size, record_length = "NA", 0, 0
+        
         json_path = os.path.join(model_path, "config.json")
         layer_num = json.load(open(json_path, encoding="utf8"))["num_hidden_layers"]
         if pipeline_parallel_size == 1:
@@ -170,7 +177,8 @@ class Qwen2Inferer:
         print("initializing with layer-device setup: "+str(layer_to_device_list))
         # # (int world_size, int data_parallel_size, int pipeline_parallel, char* json_config_path, int layer_num, int* block2device_list, int max_dynamic_bsz, int max_sequence_length, int max_queue_size, int timeout)
         # print(f"python parsing model params to c++: layer_num={layer_num}, dynamic_bsz={max_dynamic_bsz}, BL={max_length}")
-        liteqwen_lib.initialize_empty_qwen2(world_size, data_parallel_size, pipeline_parallel_size, json_path.encode(), layer_num, (ctypes.c_int * layer_num)(*layer_to_device_list), max_dynamic_bsz, max_length, data_parallel_size*max_dynamic_bsz*5, int(self.timeout_in_secs*1000))
+        running_thread_num = 1
+        liteqwen_lib.initialize_empty_qwen2(world_size, running_thread_num, data_parallel_size, pipeline_parallel_size, json_path.encode(), layer_num, (ctypes.c_int * layer_num)(*layer_to_device_list), max_dynamic_bsz, max_length, data_parallel_size*max_dynamic_bsz*5, int(self.timeout_in_secs*1000), py_smem_name.encode(), py_smem_size, record_length)
 
         for di in range(data_parallel_size):
             dp_layer_devices = [di*pipeline_parallel_size + x for x in layer_to_device_list]
@@ -182,7 +190,7 @@ class Qwen2Inferer:
         liteqwen_lib.add_lora_adapter_config(adapter_name.encode(), bool(config["fan_in_fan_out"]), float(config["lora_alpha"]), int(config["r"]), (",".join(config["target_modules"])).encode())
         self.lora_name_insert_map[adapter_name] = False
 
-    def submit(self, request_id, input_ids, gen_config=None, logits_mask_base_val=0.0, logits_mask_except_val=0.0, logits_mask_except_ids=[], return_logits=False):
+    def submit(self, record_id, request_id, input_ids, gen_config=None, logits_mask_base_val=0.0, logits_mask_except_val=0.0, logits_mask_except_ids=[], return_logits=False):
         top_p = self.top_p
         top_k = self.top_k
         temperature = self.temperature
@@ -217,6 +225,8 @@ class Qwen2Inferer:
             
             if "max_new_tokens" in gen_config and gen_config["max_new_tokens"] > 0:
                 maxlen2 = ((inp_len + gen_config["max_new_tokens"] - 1) // self.min_len + 1) * self.min_len
+                maxlen2 = min(self.max_length, maxlen2)
+
             else:
                 maxlen2 = -1
             
@@ -259,7 +269,7 @@ class Qwen2Inferer:
         # (char* request_id, int input_length, int* input_ids, float top_p, int top_k, float temperature, int max_length, int max_new_tokens, 
         #    char* adapter_name, int seed, float mask_base_val, float mask_except_val, int except_ids_len, int* logit_except_ids, bool return_logits)
         # print("maxlen=", maxlen, "max_new_tokens=", max_new_tokens)
-        success = liteqwen_lib.submit_request(request_id.encode(), inp_len, (ctypes.c_int * inp_len)(*input_ids), top_p, top_k, temperature, int(maxlen), int(max_new_tokens), 
+        success = liteqwen_lib.submit_request(record_id, request_id.encode(), inp_len, (ctypes.c_int * inp_len)(*input_ids), top_p, top_k, temperature, int(maxlen), int(max_new_tokens),
             adapter_name.encode(), seed, logits_mask_base_val, logits_mask_except_val, logits_mask_ids_len, (ctypes.c_int * (logits_mask_ids_len+1))(*logits_mask_except_ids), return_logits)
         return success
 
@@ -385,9 +395,13 @@ class Qwen2Inferer:
     
     def start_loops(self):
         liteqwen_lib.start_loops()
+
+    def start_single_thread_loop(self, data_id):
+        assert(data_id < self.data_parallel_size)
+        liteqwen_lib.start_loop_in_dp_id(data_id)
     
     def get_generated(self, request_id, is_incremental=True, force_interupt=False, no_stream=False, return_logits=False):
-
+        no_stream = False # 不能在c++中阻塞，需要在python中asleep。
         if not return_logits:
             result_info = liteqwen_lib.get_frame(request_id.encode(), is_incremental, force_interupt, no_stream)
             status = result_info[0]
@@ -427,3 +441,6 @@ class Qwen2Inferer:
                 dict_list.append({"pos": _k, "tops": _v})
             result["logits"] = dict_list     
         return result
+
+    def delete_req(self, req_id):
+        liteqwen_lib.delete_request(req_id)

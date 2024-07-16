@@ -107,7 +107,7 @@ def check_v3_history(v3_history):
 
 class LiteqwenInferer():
     def __init__(self, world_size, data_parallel_size, pipeline_parallel_size, model_path, lora_paths,
-                max_dynamic_bsz, max_sequence_length, top_p, top_k, default_temperature, use_lora):
+                max_dynamic_bsz, max_sequence_length, top_p, top_k, default_temperature, use_lora, thread_data_id=-1, token_smem_info=None):
         self.tokenizer = Qwen2TokenizerFast.from_pretrained(model_path)
         use_lora = use_lora and len(lora_paths) > 0
         self.use_lora = use_lora
@@ -120,6 +120,9 @@ class LiteqwenInferer():
         self.pipeline_parallel_size = int(pipeline_parallel_size)
         self.world_size = int(world_size)
         self.current_lora_name = "skip"
+        self.data_id = thread_data_id
+        if thread_data_id < 0:
+            logger.info("PYTHON ERROR: DDP should start a data_parallel thread with data_id>=0")
 
         self.english_mask = {"default":0.01, "ids":[-1], "value":0.0} # 加载scripts/mask_templates/logits_masks.json里的template_id=-1的模板。生成过程如下：
         """
@@ -135,12 +138,14 @@ class LiteqwenInferer():
         self.null_mask = {"default":0.0, "ids":[], "value":0.0}
 
         self.liteqwen_connector = connector.Qwen2Inferer(model_path, self.world_size, self.data_parallel_size, self.pipeline_parallel_size, self.max_dynamic_bsz,
-                                            self.max_sequence_length, top_p=top_p, top_k=self.top_k, temperature=default_temperature, use_lora=use_lora)
+                                            self.max_sequence_length, top_p=top_p, top_k=self.top_k, temperature=default_temperature, use_lora=use_lora, token_smem_info=token_smem_info)
         self.liteqwen_connector.load_base_model_params(model_path)
         for item in lora_paths:
             if self.use_lora:
                 self.liteqwen_connector.load_lora_params(item["name"], item["path"])
-        self.liteqwen_connector.start_loops()
+        # self.liteqwen_connector.start_loops()
+        self.liteqwen_connector.start_single_thread_loop(thread_data_id)
+
         return
 
     async def get_stream_reply(self, input_info, history, gen_kwargs, request_id=None):
@@ -170,11 +175,13 @@ class LiteqwenInferer():
         return_raw = True # bool(gen_kwargs.pop("return_raw", True))
         seed = int(gen_kwargs.pop("seed", -1)) # 默认随机
         top_k = max(min(gen_kwargs.pop("topk", self.top_k), 64), 1)
-        prefix_token_ids = gen_kwargs.pop("prefix_token_ids", [])
         try:
             # inputs = self.tokenizer.build_chat_input(text, history=history, role=inp_role)
             message_list = history + [{"role":inp_role, "content":text}]
             completed_text = self.tokenizer.apply_chat_template(message_list, tokenize=False, add_generation_prompt=True)
+
+            if "prefix_text" in gen_kwargs:
+                completed_text = completed_text + str(gen_kwargs["prefix_text"])
             inputs = self.tokenizer([completed_text], return_tensors="pt").to("cpu")
             
             inp_len = int(inputs["input_ids"].shape[1])
@@ -183,9 +190,6 @@ class LiteqwenInferer():
                 valid_request = False
 
             input_id_list = [int(x) for x in list(inputs["input_ids"][0].cpu().numpy())]
-            if len(prefix_token_ids) > 0:
-                input_id_list.extend(prefix_token_ids)
-                inp_len = inp_len + len(prefix_token_ids)
             lora_name_using, hf_gen_kwargs = prepare_kwargs_and_lora(self, request_id, self, gen_kwargs, self.use_lora, inp_len)
             flat_text = text.replace("\n", "<s>")
             logger.info(f"START GENERATION stream=True, req_id={request_id}, role={inp_role}, query={flat_text}, hist_len={len(history)}, gen_kwargs={hf_gen_kwargs}")
@@ -273,19 +277,19 @@ class LiteqwenInferer():
         return_raw = True # bool(gen_kwargs.pop("return_raw", True))
         seed = int(gen_kwargs.pop("seed", -1)) # 默认随机
         top_k = max(min(gen_kwargs.pop("topk", self.top_k), 64), 1)
-        prefix_token_ids = gen_kwargs.pop("prefix_token_ids", [])
+
         try:
             message_list = history + [{"role":inp_role, "content":text}]
             completed_text = self.tokenizer.apply_chat_template(message_list, tokenize=False, add_generation_prompt=True)
+
+            if "prefix_text" in gen_kwargs:
+                completed_text = completed_text + str(gen_kwargs["prefix_text"])
             inputs = self.tokenizer([completed_text], return_tensors="pt").to("cpu")
             inp_len = int(inputs["input_ids"].shape[1])
             if inp_len > (GLOBAL_CONFIG["max_length"] - 20):
                 return "RUNTIME ERROR: 输入太长，距离max_length不足20个token，无法生成。", None
 
             input_id_list = [int(x) for x in list(inputs["input_ids"][0].cpu().numpy())]
-            if len(prefix_token_ids) > 0:
-                input_id_list.extend(prefix_token_ids)
-                inp_len = inp_len + len(prefix_token_ids)
             lora_name_using, hf_gen_kwargs = prepare_kwargs_and_lora(self, request_id, self, gen_kwargs, self.use_lora, inp_len)
             flat_text = text.replace("\n", "<s>")
             logger.info(f"START GENERATION stream=True, req_id={request_id}, role={inp_role}, query={flat_text}, hist_len={len(history)}, gen_kwargs={hf_gen_kwargs}")
@@ -302,10 +306,12 @@ class LiteqwenInferer():
         success_frame_ct = 0
         accumulating_ids = []
         unfinished_text = ""
-        await asyncio.sleep(0.5) # 这里延迟不能去除，需要等c++队列添加或移动的锁，太快请求get_generate可能导致status=-1，之后请求才加入队列成功。
+        await asyncio.sleep(0.2) # 这里延迟不能去除，需要等c++队列添加或移动的锁，太快请求get_generate可能导致status=-1，之后请求才加入队列成功。
         while True:
+            print("connector getting...")
             resp = self.liteqwen_connector.get_generated(request_id, return_logits=hf_gen_kwargs["return_logits"])
             logits_info = resp["logits"] if "logits" in resp else None
+            print("connector resp=", resp)
             if resp["status"] == 0:
                 await asyncio.sleep(0.2)
                 continue
@@ -319,6 +325,7 @@ class LiteqwenInferer():
                 # if not return_raw and len(metadata_splited) > 1:
                 #     final_full_text = final_full_text[len(metadata_splited[0]) + 1:]  # 去除metadata
                 flat_reply = final_full_text.replace("\n", "<s>")
+                print(f"REPLY for request_id={request_id} is: {flat_reply}")
                 logger.info(f"REPLY for request_id={request_id} is: {flat_reply}")
 
                 return final_full_text, logits_info
@@ -349,11 +356,7 @@ class LiteqwenInferer():
         logger.warning(f"Unfinished REPLY for request_id={request_id} is: {flat_reply}")
         return unfinished_text, logits_info
 
-def get_inferer():
+def get_inferer(data_id=-1, token_smem_info=None):
     return LiteqwenInferer(WORLD_SIZE, DATA_PARALLEL_SIZE, PIPELINE_PARALLEL_SIZE, GLOBAL_CONFIG["model_name_or_path"],
                          GLOBAL_CONFIG["adapters"], GLOBAL_CONFIG["max_dynamic_bsz"], GLOBAL_CONFIG["max_length"], GLOBAL_CONFIG["top_p"],
-                         GLOBAL_CONFIG["top_k"], GLOBAL_CONFIG["temperature"], GLOBAL_CONFIG["use_lora"])
-
-    # return liteqwenInferer(4, 4, PIPELINE_PARALLEL_SIZE, GLOBAL_CONFIG["model_name_or_path"],
-    #                       GLOBAL_CONFIG["adapters"], GLOBAL_CONFIG["max_length"], GLOBAL_CONFIG["top_p"],
-    #                       GLOBAL_CONFIG["top_k"], GLOBAL_CONFIG["temperature"], GLOBAL_CONFIG["use_lora"])
+                         GLOBAL_CONFIG["top_k"], GLOBAL_CONFIG["temperature"], GLOBAL_CONFIG["use_lora"], thread_data_id=data_id, token_smem_info=token_smem_info)

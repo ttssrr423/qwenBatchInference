@@ -16,13 +16,13 @@ master代码仅针对qwen1.5-14b-chat-int4-gptq进行的推理加速，如果更
 peft版本0.4.0之后，需要注意lora模型的`adapter_config.json`中`"use_rslora": false`参数，需要为`false`才能推理结果正确。如果为true，lora scale计算时需要增加sqrt操作，需要修改`src/forward_gpu.cu`里的对应方法。
 
 ### 推理性能对比
-条件：单卡v100，16并发，input token数44，平均reply字符数230，max_sequence_length(max-model-len)=4096。无加载lora
+条件：单卡v100，16并发，input token数44，平均reply字符数230，max_sequence_length(max-model-len)=5120。无加载lora
 
-vllm吞吐量：419字符/秒，显存占用14.8G (--gpu-memory-utilization 限制)
+vllm吞吐量：419字符/秒，显存占用14.8G (--gpu-memory-utilization 限制)，支持推理长度2K
 
-liteqwen吞吐量：360字符/秒，显存占用12.9G
+liteqwen吞吐量：461字符/秒，显存占用12.9G，支持推理长度5K
 
-吞吐量仍存在一定差距，需要后续优化。
+吞吐量和长度都超过了vllm。
 
 ### 样本batch分割
 基于continuous batch进行的llm推理加速，flash attention使用cutlass_fmha计算prefill阶段的attention；decode attention是自主实现的算子（参考了falsh attention）。量化使用exllama的gptq linear。支持lora切换，会将请求按照时间顺序切分batch，遇到新请求的lora改变，或已经拼接到max_batch_size，或kv-cache缓存剩余空间无法容纳新请求的max_length时，会暂停请求的reload，推理当前batch。当前batch内任意样本完结后恢复新样本reload过程。
@@ -103,15 +103,15 @@ gen_kwargs目前支持的参数如下：
     "max_length": 256, // 请求的输入+输出最长token数，尽量给小一些。一般和max_new_tokens二选一提供。如果都不提供则默认按照configuration中配置的最大长度，以bsz=1推理。
     "max_new_tokens": 128, // 回复最长token数，如果和max_length一起提供，则按照计算input token数后二者最短的一种进行eos截断。
     "top_p": 0.9, // 默认见configuration.json
-    "prefix_token_ids": [3837] // int list，length=N。手动提供前N个回复token_id，用于引导生成。默认空
+    "prefix_text": "你好！" // 引导生成用的字符串，默认空。如果添加引导，则回复不包含引导内容，但会从引导处续写。
 }
 ```
 
-prefix_token_ids默认空list，正常生成，如果提问 "你好啊，你是谁？"，则bot回复以 "你好！我是通义千问，..." 为开头。
+prefix_text默认空字符串，正常生成，如果提问 "你好啊，你是谁？"，则bot回复以 "你好！我是通义千问，..." 为开头。
 
 如果提供 [3837] (对应token "我")，且降低temperature，则bot回复以 "我是通义千问，..." 为开头。
 
-可以结合`{"max_new_tokens": 2, "prefix_token_ids": [xx, xx, xx], "temperature":0.01}`的参数组合，让大模型做ABCD选择题，且稳定在回复开头解析答案。
+可以结合`{"max_new_tokens": 2, "prefix_text": "xxx", "temperature":0.01}`的参数组合，让大模型做ABCD选择题，且稳定在回复开头解析答案。
 
 ### 实现设计
 模型大致架构如下：

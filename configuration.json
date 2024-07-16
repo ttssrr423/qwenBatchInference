@@ -6,7 +6,7 @@
     {"name": "default", "path": "/mnt/e/UbuntuFiles/models_saved/ppt_outline_epoch3"}
   ],
   "max_dynamic_bsz": 16,
-  "max_length":4096,
+  "max_length":5120,
   "do_sample": true,
   "top_p": 0.9,
   "top_k": 32,

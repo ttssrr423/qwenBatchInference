@@ -8,7 +8,7 @@ LOCAL_URL = "http://127.0.0.1:8081"
 PARALLEL_NUM = 16
 ROUND_NUM = 5
 USE_STREAM = False
-OUT_FILE = "test_results.txt" # None # "test_results.txt"
+OUT_FILE = None #"test_results.txt" # None # "test_results.txt"
 
 def single_id_request(_id):
     import requests
@@ -71,13 +71,13 @@ def chat_post(inps):
     data3 = {"query": "为什么地球是圆的？", "history": [],
             "request_id": "REQ" + str(req_id)}  # "request_id":"REQ"+str(req_id)
     task_map = {0:data0, 1:data1, 2:data2, 3:data3}
-    data = task_map[int(req_id) % 4]
-
-    lora_name = "default"
+    # data = task_map[int(req_id) % 4]
+    data = task_map[0]
+    lora_name = "skip"
     return_lgt = False # True if random.random() > 0.5 else False
-    max_length = random.randint(1000, 1200)
-    # max_length = 5120
-    data.update({"gen_kwargs":{"max_new_tokens":max_length, "temperature":0.01, "adapter_name": lora_name}})
+    # max_length = random.randint(1000, 1200)
+    max_length = 256
+    data.update({"gen_kwargs":{"max_length":max_length, "temperature":0.01, "adapter_name": lora_name}})
     
     req_res = requests.post(LOCAL_URL+"/chat", data=json.dumps(data))
     try:

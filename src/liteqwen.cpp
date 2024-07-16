@@ -13,17 +13,24 @@ namespace liteqwen{
         load_lock.lock();
         liteqwen::load_finish_ct += ct;
         printf("loading_ct=%i\n", liteqwen::load_finish_ct);
-        if (liteqwen::load_finish_ct >= liteqwen::qwen2params.dp_size) {
-            liteqwen::loading_finished = true;
-            printf("<============ALL DATA PARALLEL INITIALIZED==========\n");
+
+        if (liteqwen::qwen2params.running_thread_num > 0) {
+            if (liteqwen::load_finish_ct >= liteqwen::qwen2params.running_thread_num) {
+                liteqwen::loading_finished = true;              
+            }
+        } else {
+            if (liteqwen::load_finish_ct >= liteqwen::qwen2params.dp_size) {
+                liteqwen::loading_finished = true;
+                printf("<============ALL DATA PARALLEL INITIALIZED==========\n");
+            }
         }
         load_lock.unlock();
     }
 }
 
-void init_empty_qwen2(int world_size, int data_parallel_size, std::string json_config_path, std::vector<int> layer2device_list, int max_dynamic_bsz, int max_sequence_length, int max_queue_size, int timeout) {
+void init_empty_qwen2(int world_size, int running_thread_num, int data_parallel_size, std::string json_config_path, std::vector<int> layer2device_list, int max_dynamic_bsz, int max_sequence_length, int max_queue_size, int timeout, std::string py_smem_name, int py_smem_size, int record_length) {
     
-    liteqwen::qwen2params.Init(world_size, data_parallel_size, json_config_path, layer2device_list, max_dynamic_bsz, max_sequence_length);
+    liteqwen::qwen2params.Init(world_size, running_thread_num, data_parallel_size, json_config_path, layer2device_list, max_dynamic_bsz, max_sequence_length, record_length);
     liteqwen::qwen2_ptr = (std::shared_ptr<liteqwen::Qwen2Params>)(&liteqwen::qwen2params);
 
     liteqwen::lora_adapters = std::make_shared<std::map<std::string, liteqwen::LoraConfig>>();
@@ -33,6 +40,21 @@ void init_empty_qwen2(int world_size, int data_parallel_size, std::string json_c
     // 下面thread_pool的存储方式是等价的，仅限class，而非struct。
     // liteqwen::thread_pool = std::make_shared<liteqwen::ContextPool>(max_queue_size, timeout, max_dynamic_bsz);
     liteqwen::thread_pool = (std::shared_ptr<liteqwen::ContextPool>)(new liteqwen::ContextPool(max_queue_size, timeout));
+
+    if (py_smem_size > 0) {
+        const char* shm_name = py_smem_name.c_str();
+        size_t shm_size = static_cast<size_t>(py_smem_size);
+        int shm_fd = shm_open(shm_name, O_RDWR, 0666); 
+        if (shm_fd == -1) {
+            perror("shm_open");
+        }
+        void* ptr = mmap(NULL, shm_size, PROT_READ|PROT_WRITE, MAP_SHARED, shm_fd, 0);
+        if (ptr == MAP_FAILED) {
+            perror("mmap");
+        }
+        liteqwen::py_token_buffer = (std::shared_ptr<int>)(reinterpret_cast<int*>(ptr));
+        printf("python smem %s binded with size=%i..\n", shm_name, shm_size);
+    }
     return;
 }
 
@@ -47,14 +69,17 @@ void add_qwen2_weight(const std::string& weight_name, std::vector<int> shape, li
     return;
 }
 
-int submit_inference(const std::string& request_id, std::vector<int> input_ids, const liteqwen::GenerationConfig& gen_cfg, float logits_mask_base_val, float logits_mask_except_val, std::vector<int> logit_mask_except_ids, bool return_logits) {    
+int submit_inference(int record_id, const std::string& request_id, std::vector<int> input_ids, const liteqwen::GenerationConfig& gen_cfg, float logits_mask_base_val, float logits_mask_except_val, std::vector<int> logit_mask_except_ids, bool return_logits) {    
     while(liteqwen::thread_pool->GetLength() >= liteqwen::thread_pool->max_queue_size) {
         // 队列已满，提交失败。
-        printf("liteqwen backend queue is full until timeout for request_id=%s, submit success=0\n", request_id.c_str());
+        printf("POOL WARNING: liteqwen backend queue is full until timeout for request_id=%s, submit success=0\n", request_id.c_str());
         return 0;
     }
+    if (record_id<0) {
+        printf("POOL ERROR: record id=%i for request_id=%s, must be >= 0\n", record_id, request_id.c_str());
+    }
     liteqwen::ResponseContext waiting_ctx;
-    waiting_ctx.Init(request_id, input_ids, gen_cfg, logits_mask_base_val, logits_mask_except_val, logit_mask_except_ids, return_logits);
+    waiting_ctx.Init(record_id, request_id, input_ids, gen_cfg, logits_mask_base_val, logits_mask_except_val, logit_mask_except_ids, return_logits);
     liteqwen::thread_pool->Add(request_id, waiting_ctx);
     printf("POOL: Added to queue: request_id=%s, queue_size=%i\n", request_id.c_str(), liteqwen::thread_pool->GetLength());
     return 1;
@@ -86,10 +111,31 @@ void start_thread_loops() {
     std::map<std::string, liteqwen::Data*>* cpu_weights_ref = liteqwen::originalCPUWeights.get();
     std::map<std::string, liteqwen::LoraConfig>* lora_ref = liteqwen::lora_adapters.get();
     std::map<std::string, liteqwen::Q4LinearMeta>* quant_ref = liteqwen::Q4linearMetaMap.get();
+    int* python_smem_ptr = liteqwen::py_token_buffer.get();
 
     for (int di=0; di< model_par.dp_size; di++) {
-        liteqwen::worker_threads.push_back(new std::thread(liteqwen::Generate, di, liteqwen::thread_pool, model_par, cpu_weights_ref, lora_ref, quant_ref));
+        liteqwen::worker_threads.push_back(new std::thread(liteqwen::Generate, di, liteqwen::thread_pool, model_par, cpu_weights_ref, lora_ref, quant_ref, python_smem_ptr));
     }
+}
+
+void start_single_thread_loop(int data_id) {
+    // lora以及cpu weight都加载完后调用，开始各data_id线程的加载和初始化。
+    printf("lora configs loaded:\n");
+    std::map<std::string, liteqwen::LoraConfig>* lora_map = liteqwen::lora_adapters.get();
+    for(std::map<std::string, liteqwen::LoraConfig>::iterator it = lora_map->begin(); it != lora_map->end(); ++it) {
+        std::string lora_module_str = liteqwen::join((it->second).target_modules, std::string(","));
+        printf("%s: r=%i, modules=[%s]\n", (it->first).c_str(), (it->second).r, lora_module_str.c_str());
+    }
+
+    int dp_size = liteqwen::qwen2params.dp_size;
+    liteqwen::Qwen2Params model_par = liteqwen::qwen2params;
+
+    // printf("base_model num_layers=%i, max_dynamic_bsz=%i, BL=%i. Scattering to %i data parallels.\n", 0, model_par.num_layers, model_par.max_dynamic_bsz, model_par.max_sequence_length, model_par.dp_size);
+    std::map<std::string, liteqwen::Data*>* cpu_weights_ref = liteqwen::originalCPUWeights.get();
+    std::map<std::string, liteqwen::LoraConfig>* lora_ref = liteqwen::lora_adapters.get();
+    std::map<std::string, liteqwen::Q4LinearMeta>* quant_ref = liteqwen::Q4linearMetaMap.get();
+    int* python_smem_ptr = liteqwen::py_token_buffer.get();
+    liteqwen::worker_threads.push_back(new std::thread(liteqwen::Generate, data_id, liteqwen::thread_pool, model_par, cpu_weights_ref, lora_ref, quant_ref, python_smem_ptr));
 }
 
 
@@ -160,7 +206,7 @@ liteqwen::Response get_generated(std::string request_id, bool is_incremental, bo
             ctx_ptr->isEnding = true;
         }
 
-        while (no_stream && (!(ctx_ptr->isEnding))) { // no_stream的话等待生成完毕
+        while (no_stream && (!(ctx_ptr->isEnding))) { // no_stream的话等待生成完毕。并发时会阻塞，所以no_stream是false。
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
 
@@ -230,4 +276,8 @@ liteqwen::Response get_generated(std::string request_id, bool is_incremental, bo
     }
 
     return resp;
+}
+
+void delete_request_ctx(std::string request_id) {
+    liteqwen::thread_pool->DELETE(request_id);
 }

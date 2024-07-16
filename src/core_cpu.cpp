@@ -811,6 +811,12 @@ void Data::export_2d(std::string filepath) {
     DeviceSynchronize();
 }
 
+void Data::CpuDelete() {
+    if (this->gpu_id < 0) {
+        delete[] this->cpuData;
+    }
+}
+
 void Data::print() {
     this->print(std::string(""));
 }
