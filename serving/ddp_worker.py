@@ -118,6 +118,13 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
 
             req_id, is_stream, text_info, history, gen_kwargs = snapshot_inp[0], snapshot_inp[1], snapshot_inp[2], \
                                                                 snapshot_inp[3], snapshot_inp[4]
+            is_expired_flag = mgr_dict.get(req_id, "None")
+            if is_expired_flag == "expired":
+                del inp_info
+                del mgr_dict[req_id]
+                await asyncio.sleep(0.05)
+                continue
+
             inp_text, inp_metadata, inp_role = text_info[0], text_info[1], text_info[2]
             if inp_role is None or inp_role not in ["user", "assistant", "system", "observation"]:
                 inp_role = "user"
@@ -170,6 +177,8 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
                 del inp_info
                 continue
 
+            buffer_pool.refresh_time(buf_record_id)
+            buffer_pool.set_gen_state(buf_record_id, GenState.GENERATING)
             token_pool[buf_record_id][0] = 0 # 重置python eos状态
             token_pool[buf_record_id][1] = 0 # 重置c++ eos状态
             token_pool[buf_record_id][2] = 0 # 重置c++ reply长度

@@ -31,7 +31,8 @@ def get_hash(_text):
 
 def release_resource(request_id, buffer_rid=None, stream_pool=None):
     if request_id in DDP_POOL.dict:
-        del DDP_POOL.dict[request_id]
+        if isinstance(DDP_POOL.dict[request_id], int):
+            del DDP_POOL.dict[request_id]
     if buffer_rid is not None and buffer_rid >= 0:
         stream_pool.set_ret_state(buffer_rid, RetState.END)
         stream_pool.set_timeout(buffer_rid)
@@ -57,8 +58,10 @@ async def simple_chat(buffer_info, text_info, hist, gen_kwargs, timeout=120, req
     while True:
         time_cost = (datetime.datetime.now() - start_tm).total_seconds()
         if time_cost > timeout:
+            if buffer_record_id >= 0:
+                stream_pool.set_request_to_stop(request_id, buffer_record_id)
+            DDP_POOL.dict[request_id] = "expired"
             release_resource(request_id)
-            del input_info
             logger.info(f"CLIENT RUNTIME ERROR: req={request_id} 推理超时，无法获取结果。")
             return "RUNTIME ERROR: 推理超时，无法获取结果。"
 
@@ -111,8 +114,10 @@ async def stream_chat(buffer_info, text_info, hist, gen_kwargs, timeout=120, req
         time_cost = (datetime.datetime.now() - start_tm).total_seconds()
         if time_cost > timeout:
             logger.info(f"CLIENT RUNTIME ERROR: req={request_id} 推理超时，无法获取结果。")
+            if buffer_record_id >= 0:
+                stream_pool.set_request_to_stop(request_id, buffer_record_id)
+            DDP_POOL.dict[request_id] = "expired"
             release_resource(request_id)
-            del input_info
             yield ("RUNTIME ERROR: 推理超时，无法获取结果。", "end")
             break
 

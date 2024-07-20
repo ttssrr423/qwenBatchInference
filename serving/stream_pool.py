@@ -188,6 +188,12 @@ class StreamPool():
         ret_state = int.from_bytes(self.buffer.buf[offset:offset + 4], byteorder='little', signed=True)
         return RetState(ret_state)
 
+    def refresh_time(self, rid):
+        record_offset = rid * self.record_stride
+        time_offset = record_offset + self.time_offset
+        cur_ts = float(datetime.datetime.now().timestamp())
+        self.buffer.buf[time_offset:time_offset + 4] = struct.pack('<f', cur_ts)
+
     def wait_for_start(self, req_id):
         if len(req_id) > self.max_request_id_len:
             req_id = req_id[:self.max_request_id_len]
@@ -211,6 +217,6 @@ class StreamPool():
             trial_num += 1
             if trial_num >= self.max_qsize/self.ptr_move_stride: # 可能出于未知原因，资源已满，适当降低超时时间，并尝试中断其他生成。
                 print("PYTHON POOL WARNING: too much records occupied, maybe check for deletion after eos.")
-                if (cur_ts - prev_updated_ts) > 30.0:
+                if (cur_ts - prev_updated_ts) > 120.0:
                     self.write_int_to_buffer(RetState.END.value, record_offset+self.consume_state_offset)
                     trial_num = 0

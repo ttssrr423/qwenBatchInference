@@ -314,7 +314,7 @@ void BatchInputPreparer::DecodeUpdate(int data_id, StringArray request_ids, std:
                 bool suc = ctx_ref->Append(example_tk_id, false);
                 if (!suc) {
                     // ctx_ref终止生成
-                    printf("TOKEN_UPDATE TERMINATE: repeated generation, stop for req=%s, this is unusual, should check for nan & inf values.\n", matched_req_id.c_str());
+                    printf("TOKEN_UPDATE TERMINATE: either activate terminate or repeated generation, stop for req=%s, this is unusual. If not active terminated, should check for nan & inf values.\n", matched_req_id.c_str());
                     kv_cache_ref->free(matched_req_id);
                     pool->SetReloadOn(data_id);
                     req_item = (--this->decoding_examples.erase(req_item));                            
