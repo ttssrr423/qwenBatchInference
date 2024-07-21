@@ -222,12 +222,13 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
 
                     if not final_full_text.startswith("RUNTIME ERROR:") and "return_logits" in hf_gen_kwargs and hf_gen_kwargs["return_logits"]:
                         resp = inferer.liteqwen_connector.get_generated(req_id, return_logits=hf_gen_kwargs["return_logits"])
-                        logits_info = resp["logits"] # if "logits" in resp else None
-                        lgt_json = json.dumps(logits_info, ensure_ascii=False)
-                        lgt_str = "LOGITS_LEN:"+str(len(lgt_json))+":"+lgt_json
-                        if len(lgt_str) + len(final_full_text) < inferer.max_sequence_length * 4:
-                            # max_seq_len * 4 is the estimated token number can be transfered.
-                            final_full_text = lgt_str + final_full_text
+                        if "logits" in resp:
+                            logits_info = resp["logits"] # if "logits" in resp else None
+                            lgt_json = json.dumps(logits_info, ensure_ascii=False)
+                            lgt_str = "LOGITS_LEN:"+str(len(lgt_json))+":"+lgt_json
+                            if len(lgt_str) + len(final_full_text) < inferer.max_sequence_length * 4:
+                                # max_seq_len * 4 is the estimated token number can be transfered.
+                                final_full_text = lgt_str + final_full_text
                     buffer_pool.write_result(buf_record_id, final_full_text, is_first_frame=(success_frame_ct == 0))
                 else:
                     # no_stream and not eos

@@ -1,8 +1,6 @@
 # qwen inference accelerate
 qwen 14b chat int4 gptq inference accelerated for V100 16G
 
-third-party的cutlass适用于3.4版本，其他版本不保证无报错。
-
 # 推理加速框架说明
 
 ### 模型支持

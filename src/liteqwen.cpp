@@ -152,11 +152,11 @@ liteqwen::Response get_generated(std::string request_id, bool is_incremental, bo
         if (ctx_ptr != nullptr) {
             // printf("node %s length comparing input length:%i?=%i\n", request_id.c_str(), ctx_ptr->input_length, ctx_ptr->current_length);
             if (ctx_ptr->input_length == ctx_ptr->current_length) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                ctx_ptr = (liteqwen::ResponseContext*)liteqwen::thread_pool->GetRes(request_id);
-                if (ctx_ptr == nullptr) {
-                    ctx_ptr = (liteqwen::ResponseContext*)liteqwen::thread_pool->GetPtr(request_id);
-                }
+                // std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                // ctx_ptr = (liteqwen::ResponseContext*)liteqwen::thread_pool->GetRes(request_id);
+                // if (ctx_ptr == nullptr) {
+                //     ctx_ptr = (liteqwen::ResponseContext*)liteqwen::thread_pool->GetPtr(request_id);
+                // }
 
                 if (ctx_ptr == nullptr) {
                     status = -1;
@@ -232,15 +232,15 @@ liteqwen::Response get_generated(std::string request_id, bool is_incremental, bo
             return resp;
         }
 
-        int delta_len = ctx_ptr->current_length - ctx_ptr->prev_length;
-        while (delta_len <= 0) { // 确保每次yield内容非空
-            // printf("waiting for new content: %s, prev_len=%i, cur_len=%i\n", request_id.c_str(), ctx_ptr->prev_length, ctx_ptr->current_length);
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            if (ctx_ptr->isEnding) {
-                break;
-            }
-            delta_len = ctx_ptr->current_length - ctx_ptr->prev_length;
-        }
+        // int delta_len = ctx_ptr->current_length - ctx_ptr->prev_length;
+        // while (delta_len <= 0) { // 确保每次yield内容非空
+        //     // printf("waiting for new content: %s, prev_len=%i, cur_len=%i\n", request_id.c_str(), ctx_ptr->prev_length, ctx_ptr->current_length);
+        //     std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        //     if (ctx_ptr->isEnding) {
+        //         break;
+        //     }
+        //     delta_len = ctx_ptr->current_length - ctx_ptr->prev_length;
+        // }
 
         int prev_len = ctx_ptr->prev_length;
         int cur_len = ctx_ptr->current_length;
@@ -249,9 +249,13 @@ liteqwen::Response get_generated(std::string request_id, bool is_incremental, bo
         int top_k = ctx_ptr->generation_config.top_k;
         std::vector<int> response_token_list;
         if (is_incremental) {
-            response_token_list = std::vector<int>((ctx_ptr->tokens).begin() + prev_len, (ctx_ptr->tokens).begin() + cur_len);
+            if (cur_len-prev_len > 0) {
+                response_token_list = std::vector<int>((ctx_ptr->tokens).begin() + prev_len, (ctx_ptr->tokens).begin() + cur_len);
+            }
         } else {
-            response_token_list = std::vector<int>((ctx_ptr->tokens).begin() + inp_len, (ctx_ptr->tokens).begin() + cur_len);
+            if (cur_len - inp_len > 0) {
+                response_token_list = std::vector<int>((ctx_ptr->tokens).begin() + inp_len, (ctx_ptr->tokens).begin() + cur_len);
+            }
         }
 
         std::vector<liteqwen::TopLogitsInfo> response_token_logits;
