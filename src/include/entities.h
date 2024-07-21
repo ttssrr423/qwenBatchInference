@@ -19,10 +19,10 @@ struct BatchGeneratedRes {
 };
 
 struct Qwen2Params {
-    void Init(int world_size, int running_thread_num, int data_parallel_size, std::string json_config_path, std::vector<int> base_layer2device, int max_dynamic_bsz, int max_sequence_length, int py_record_maxlen);
+    void Init(int world_size, int data_parallel_size, std::string json_config_path, std::vector<int> base_layer2device, int max_dynamic_bsz, int max_sequence_length);
     int get_name2device(std::string w_key, int input_device=-1, int output_device=-1);
     void update_data_id(int data_id);
-    int running_thread_num;
+
     int data_id;
     float rope;
     int world_size;
@@ -44,8 +44,7 @@ struct Qwen2Params {
     int max_sequence_length;
     bool gptq_desc;
     int top_k;
-    int py_record_maxlen;
-
+    
     std::string json_config_path;
     std::vector<int> data0_layer2deviceId; //for each data_id, map layer_id to device_id.
     std::vector<int> layer2deviceId;
@@ -119,7 +118,6 @@ struct Response {
 struct ResponseContext
 {
     bool isEnding = false;
-    int record_id;
     std::string request_id;
     int handle_id = -1;
     int processing_data_id = -1;
@@ -130,8 +128,6 @@ struct ResponseContext
     int prev_length = 0;
     liteqwen::GenerationConfig generation_config;
     std::vector<int> tokens;
-    int* smem_ptr;
-    int smem_stride;
 
     float logit_mask_base_val;
     float logit_mask_except_val;
@@ -140,10 +136,8 @@ struct ResponseContext
     bool return_logits;
     std::vector<TopLogitsInfo> token_logits;
 
-    void Init(int record_id, std::string request_id, std::vector<int> input_ids, GenerationConfig gen_cfg, float logits_mask_base_val, float logits_mask_except_val, std::vector<int> logit_mask_except_ids, bool return_logits);
-    void SetSmemRecord(int* smem_ptr, int smem_stride);
+    void Init(std::string request_id, std::vector<int> input_ids, GenerationConfig gen_cfg, float logits_mask_base_val, float logits_mask_except_val, std::vector<int> logit_mask_except_ids, bool return_logits);
     bool Append(int new_token, bool is_eos);
-    bool write_to_smem(int token_id, bool is_eos);
     void AppendLogits(float logit, int token_id, int pos);
     void SetGenerateFlag(int data_id);
     void SetPrevLen(int prev_len);

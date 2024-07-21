@@ -24,13 +24,12 @@
 
 
 extern "C" {
-    DLL_EXPORT int submit_request(int record_id, char* request_id, int input_length, int* input_ids, float top_p, int top_k, float temperature, int max_length, int max_new_tokens, 
+    DLL_EXPORT int submit_request(char* request_id, int input_length, int* input_ids, float top_p, int top_k, float temperature, int max_length, int max_new_tokens, 
     char* adapter_name, int seed, float mask_base_val, float mask_except_val, int except_ids_len, int* logit_except_ids, bool return_logits) {
         std::string adapter = std::string(adapter_name);
         std::string request_id_str = std::string(request_id);
         
         int applied_maxlen = max_length;
-        // int max_new_tokens = max_new_tokens_;
         if (max_length < 1 && max_new_tokens < 1) {
             // 默认保留400生成token
             applied_maxlen = ((input_length + 400 - 1) / 32 + 1) * 32;
@@ -72,7 +71,7 @@ extern "C" {
             }
         }
         
-        int success = submit_inference(record_id, request_id_str, inp_ids, config, mask_base_val, mask_except_val, except_ids, return_logits);
+        int success = submit_inference(request_id_str, inp_ids, config, mask_base_val, mask_except_val, except_ids, return_logits);
         return success;
     }
 
@@ -96,14 +95,13 @@ extern "C" {
     }
 
     // liteqwen_lib.initialize_empty_qwen2(world_size, data_parallel_size, pipeline_parallel_size, json_path.encode(), layer_num, (ctypes.c_int * layer_num)(*layer_to_device_list), max_dynamic_bsz, max_length, data_parallel_size*max_dynamic_bsz*5, int(self.timeout_in_secs*1000))
-    DLL_EXPORT void initialize_empty_qwen2(int world_size, int running_thread_num, int data_parallel_size, int pipeline_parallel, char* json_config_path, int layer_num, int* block2device_list, int max_dynamic_bsz, int max_sequence_length, int max_queue_size, int timeout, char* py_smem_name, int py_smem_size, int record_length) {
+    DLL_EXPORT void initialize_empty_qwen2(int world_size, int data_parallel_size, int pipeline_parallel, char* json_config_path, int layer_num, int* block2device_list, int max_dynamic_bsz, int max_sequence_length, int max_queue_size, int timeout) {
         std::string config_path = std::string(json_config_path);
         std::vector<int> block2device_list_vec; // = std::vector<int>(layer_num);
         for (int li=0; li < layer_num; li++){
             block2device_list_vec.push_back(block2device_list[li]);
         }
-        std::string smem_name = std::string(py_smem_name);
-        init_empty_qwen2(world_size, running_thread_num, data_parallel_size, config_path, block2device_list_vec, max_dynamic_bsz, max_sequence_length, max_queue_size, timeout, smem_name, py_smem_size, record_length);
+        init_empty_qwen2(world_size, data_parallel_size, config_path, block2device_list_vec, max_dynamic_bsz, max_sequence_length, max_queue_size, timeout);
         return;
     }
 
@@ -135,13 +133,6 @@ extern "C" {
     DLL_EXPORT void start_loops() {
         start_thread_loops();
 
-        while (! liteqwen::get_loading_finished()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-    }
-
-    DLL_EXPORT void start_loop_in_dp_id(int data_id) {
-        start_single_thread_loop(data_id);
         while (! liteqwen::get_loading_finished()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -213,10 +204,5 @@ extern "C" {
     DLL_EXPORT void free_frame(int* buffer)
     {
         delete[] buffer;
-    }
-
-    DLL_EXPORT void delete_request(char* request_id) {
-        std::string request_id_str = std::string(request_id);
-        delete_request_ctx(request_id_str);
     }
 }

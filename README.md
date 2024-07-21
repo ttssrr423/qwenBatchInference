@@ -1,6 +1,8 @@
 # qwen inference accelerate
 qwen 14b chat int4 gptq inference accelerated for V100 16G
 
+已知bug：多卡多个data_parallel线程，可能导致小概率生成内容混乱，可能和线程间一部分资源没有完全隔离有关。如果python shared_memory能够稳定高并发下运行不报错，那么尽量使用master分支的python ddp版本的模型。多卡多进程的cuda资源隔离更彻底，不会产生冲突。
+
 # 推理加速框架说明
 
 ### 模型支持
@@ -18,11 +20,11 @@ peft版本0.4.0之后，需要注意lora模型的`adapter_config.json`中`"use_r
 ### 推理性能对比
 条件：单卡v100，16并发，input token数44，平均reply字符数230，max_sequence_length(max-model-len)=5120。无加载lora
 
-vllm吞吐量：419字符/秒，显存占用14.8G (--gpu-memory-utilization 限制)，支持推理长度2K
+vllm吞吐量：419字符/秒，显存占用14.8G (--gpu-memory-utilization 限制，只能支持2k长度)
 
-liteqwen吞吐量：461字符/秒，显存占用12.9G，支持推理长度5K
+liteqwen吞吐量：410字符/秒，显存占用12.9G
 
-吞吐量和长度都超过了vllm。
+吞吐量基本持平，最大支持长度比较有优势。
 
 ### 样本batch分割
 基于continuous batch进行的llm推理加速，flash attention使用cutlass_fmha计算prefill阶段的attention；decode attention是自主实现的算子（参考了falsh attention）。量化使用exllama的gptq linear。支持lora切换，会将请求按照时间顺序切分batch，遇到新请求的lora改变，或已经拼接到max_batch_size，或kv-cache缓存剩余空间无法容纳新请求的max_length时，会暂停请求的reload，推理当前batch。当前batch内任意样本完结后恢复新样本reload过程。

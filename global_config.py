@@ -15,7 +15,7 @@ DATA_PARALLEL_SIZE = WORLD_SIZE / PIPELINE_PARALLEL_SIZE
 
 USE_LORA = bool(GLOBAL_CONFIG["use_lora"])
 
-class DDP_PoolCls():
+class DDPWorkersCls():
     def __init__(self):
         self._manager = Manager()
         self._dict = self._manager.dict() # 输出结果的信息
@@ -45,4 +45,4 @@ class DDP_PoolCls():
     def set_buffer(self, buffer_instance):
         self._buffer_info = buffer_instance
 
-DDP_POOL = DDP_PoolCls()
+DDPWorkers = DDPWorkersCls()

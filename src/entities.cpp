@@ -62,14 +62,13 @@ void Q4LinearMeta::get_store_location(ParamLocation* location, std::string w_key
     return;
 }
 
-void Qwen2Params::Init(int world_size, int running_thread_num, int data_parallel_size, std::string json_config_path, std::vector<int> base_layer2device, int max_dynamic_bsz, int max_sequence_length, int py_record_maxlen) {
+void Qwen2Params::Init(int world_size, int data_parallel_size, std::string json_config_path, std::vector<int> base_layer2device, int max_dynamic_bsz, int max_sequence_length) {
     printf("initializing cpp Qwen1.5 model, with num_layers=%i, max_dynamic_bsz=%i\n", (int)(base_layer2device.size()), max_dynamic_bsz);
     
     // this->bos_token_id = 130004;    // V1 后期版本 bos token，可通过 config.json 覆盖
     // this->eos_token_id = 130005;    // V1 后期版本 eos token，可通过 config.json 覆盖
     // this->gmask_token_id= 150001;   // V1最初版本, 150528 tokens，部分 config.json 没有 gmask_token_id，因此取默认值。
     liteqwen::REPEAT_THRESHOLD = 5;
-    this->running_thread_num = running_thread_num;
     this->rope = -1.0f;
     this->world_size = world_size;
     this->dp_size = data_parallel_size;
@@ -101,7 +100,6 @@ void Qwen2Params::Init(int world_size, int running_thread_num, int data_parallel
     this->ffn_hidden_size = this->config["intermediate_size"].int_value();
     this->padded_vocab_size = this->config["vocab_size"].int_value();
 
-    this->py_record_maxlen = py_record_maxlen;
     if (this->hidden_size / this->num_attention_heads != this->kv_channels) {
         printf("ERROR: kv_channel should be equal to hidden_size / num_attention_heads, check for config\n");
         exit(1);
@@ -200,8 +198,7 @@ int Qwen2Params::get_name2device(std::string w_key, int input_device, int output
     }
 }
 
-void ResponseContext::Init(int record_id, std::string request_id, std::vector<int> input_ids, GenerationConfig gen_cfg, float logits_mask_base_val, float logits_mask_except_val, std::vector<int> logit_mask_except_ids, bool return_logits) {
-    this->record_id = record_id;
+void ResponseContext::Init(std::string request_id, std::vector<int> input_ids, GenerationConfig gen_cfg, float logits_mask_base_val, float logits_mask_except_val, std::vector<int> logit_mask_except_ids, bool return_logits) {
     this->request_id = request_id;
     this->input_length = (int)(input_ids.size());
     this->current_length = (int)(this->input_length);
@@ -219,29 +216,6 @@ void ResponseContext::Init(int record_id, std::string request_id, std::vector<in
 
     if (this->generation_config.seed == -1) {
         this->generation_config.SetRandSeed();
-    }
-}
-
-bool ResponseContext::write_to_smem(int token_id, bool is_eos) {
-    if (this->smem_stride > 0) {
-        // record[0]表示是否被python端主动终止, record[1]表示是否生成终止，record[2]表示当前长度。
-        int data_start = this->record_id * this->smem_stride;
-        bool active_terminate = static_cast<bool>(this->smem_ptr[data_start]);
-        int reply_len = this->tokens.size() - this->input_length;
-        if (active_terminate) {
-            printf("POOL: req=%s terminated by python on record_id=%i, generated_length=%i\n", this->request_id.c_str(), this->record_id, reply_len);
-        }
-        this->smem_ptr[data_start+1] = static_cast<int>(is_eos);
-        this->smem_ptr[data_start+2] = static_cast<int>(reply_len);
-        if (!is_eos) {
-            this->smem_ptr[data_start + 3 + reply_len] = token_id;
-        } else {
-            this->smem_ptr[data_start + 3 + reply_len] = DEFAULT_EOS;
-        }
-
-        return active_terminate;
-    } else {
-        return false;
     }
 }
 
@@ -294,8 +268,7 @@ bool ResponseContext::Append(int new_token, bool is_eos) {
         }
     }
     
-    bool active_terminated = this->write_to_smem(new_token, (!repeat_check_passed || is_eos));
-    if (!repeat_check_passed || active_terminated) {
+    if (!repeat_check_passed) {
         this->tokens.push_back(DEFAULT_EOS);
         this->current_length += 1;
         this->isEnding = true;
@@ -321,17 +294,6 @@ void ResponseContext::SetGenerateFlag(int data_id) {
 
 void ResponseContext::SetPrevLen(int prev_len) {
     this->prev_length = prev_len;
-}
-
-void ResponseContext::SetSmemRecord(int* smem_ptr, int smem_stride) {
-    this->smem_ptr = smem_ptr;
-    this->smem_stride = smem_stride;
-    if (this->record_id >= 0) {
-        int data_start = this->record_id * smem_stride;
-        smem_ptr[data_start] = 0;
-        smem_ptr[data_start+1] = 0;
-        smem_ptr[data_start+2] = 0;
-    }
 }
 
 ExecuteTimer::ExecuteTimer() {

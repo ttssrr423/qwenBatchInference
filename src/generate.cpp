@@ -584,7 +584,7 @@ size_t expanded_numel(size_t numel) {
 }
 
 
-void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_param, std::map<std::string, Data*>* cpu_weights_ptr, std::map<std::string, liteqwen::LoraConfig>* lora_meta, std::map<std::string, liteqwen::Q4LinearMeta>* quant_meta, int* python_smem_ptr) {
+void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_param, std::map<std::string, Data*>* cpu_weights_ptr, std::map<std::string, liteqwen::LoraConfig>* lora_meta, std::map<std::string, liteqwen::Q4LinearMeta>* quant_meta) {
 
     Qwen2Params qwen2_param = model_param;
     qwen2_param.update_data_id(data_id);
@@ -698,10 +698,7 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
         }
         // printf("added weight %s to gpu %i, shape=[%s]\n", w_key.c_str(), weight_device, get_shape_str(w_cpu_p->shape).c_str());
         DeviceSynchronize();
-
-        w_cpu_p->CpuDelete();
     }
-
     SetEmbeddingBuffer(qwen2_param.max_sequence_length, qwen2_param.hidden_size);
     DeviceSynchronize();
 
@@ -911,7 +908,6 @@ void Generate(int data_id, std::shared_ptr<ContextPool> pool, Qwen2Params model_
                 // 循环新样本拼接inputs，以及获取forward和upload所需的信息。
                 std::string prefill_req_id = allocate_params[prefill_i].request_id;
                 auto ctx_ref = pool->GetRes(prefill_req_id, true);
-                ctx_ref->SetSmemRecord(python_smem_ptr, model_param.py_record_maxlen); //初始化ctx_ref直接写入python shared memory所需的信息
                 batch_inp_preparer->AddPrefill(ctx_ref);
                 dynamic_bl = batch_inp_preparer->prefill_starts[batch_inp_preparer->prefill_bsz];
                 cpu_query_starts[prefill_i+1] = dynamic_bl;

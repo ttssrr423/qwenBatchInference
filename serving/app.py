@@ -13,7 +13,6 @@ from fastapi.responses import HTMLResponse
 from sse_starlette.sse import ServerSentEvent, EventSourceResponse
 from fastapi import Body, FastAPI, File, Form, Query, UploadFile, WebSocket
 from serving.liteqwen_inferer import get_inferer
-from serving.pool_client import pool_client
 
 
 import nest_asyncio
@@ -37,17 +36,6 @@ def get_hash(_text):
     text_with_time = _text + tm.strftime("%Y-%m-%d %H:%M:%S.%f") + rand_num
     hasher.update(text_with_time.encode(encoding="utf-8"))
     return hasher.hexdigest(), tm
-
-def try_split_logits(text):
-    if text.startswith("LOGITS_LEN:"):
-        splits = text.split(":")
-        lgt_len = int(splits[1])
-        tails = ":".join(splits[2:])
-        lgt_json = tails[:lgt_len]
-        reply = tails[lgt_len:]
-        return json.loads(lgt_json), reply
-    else:
-        return None, text
 
 global_inferer = None
 inferer_loading_lock = False
@@ -75,6 +63,11 @@ async def init_inferer():
 @app.post("/stream_chat_post")
 async def stream_chat_post(request: Request):
     try:
+        # json_post_raw = request.json()
+        # json_str_list = loop.run_until_complete(asyncio.gather(json_post_raw, loop=loop))
+        # logger.info((f"raw request: {json_str_list}").replace("\n", "\\n"))
+        # json_post = json.dumps(json_str_list[0])
+
         json_post_raw = await request.json()
         json_post = json.dumps(json_post_raw)
         json_post_list = json.loads(json_post)
@@ -107,13 +100,13 @@ async def stream_chat_post(request: Request):
         request_id, start_tm = get_hash(prompt)
     else:
         _, start_tm = get_hash(prompt)
-
-    tuple_generator = pool_client.get_reply([prompt, metadata, role], history, gen_kwargs, request_id=request_id)
+    
+    inferer = get_global_inferer()
+    tuple_generator = inferer.get_stream_reply([prompt, metadata, role], history, gen_kwargs, request_id=request_id)
 
     async def decorate():
         prev_res = ""
-        async for lgt_rep_text, flag in tuple_generator:
-            logits_info, rep_text = try_split_logits(lgt_rep_text)
+        async for rep_text, logits_info, flag in tuple_generator:
             if rep_text.startswith("RUNTIME ERROR:"):
                 code = -1
                 text = ""
@@ -164,9 +157,9 @@ async def normal_chat(request: Request):
     else:
         _, start_tm = get_hash(prompt)
 
-    lgt_and_result = await pool_client.get_chat([prompt, metadata, role], history, gen_kwargs, request_id=request_id)
-    logits_info, result = try_split_logits(lgt_and_result)
+    inferer = get_global_inferer()
 
+    result, logits_info = await inferer.get_chat([prompt, metadata, role], history, gen_kwargs, request_id=request_id)
     if result.startswith("RUNTIME ERROR:"):
         answer = {
             "response": "",
@@ -185,28 +178,6 @@ async def normal_chat(request: Request):
             "flag": "end"
         }
         app.fail_ct = 0
-    return answer
-
-@app.post("/stop_generate")
-async def stop_gen(request:Request):
-    try:
-        json_post_raw = await request.json()
-        json_post = json.dumps(json_post_raw)
-        json_post_list = json.loads(json_post)
-        req_id = json_post_list.get('request_id')
-    except Exception as ex:
-        logger.error(f"error during request decoding: {ex}, body={request.body()}")
-        answer = {
-            "code": -1,
-            "flag": ""
-        }
-        return answer
-
-    flag = await pool_client.stop_generate(req_id)
-    answer = {
-        "code": 0,
-        "flag": flag
-    }
     return answer
 
 @app.get("/health")

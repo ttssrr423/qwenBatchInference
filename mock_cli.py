@@ -8,7 +8,7 @@ LOCAL_URL = "http://127.0.0.1:8081"
 PARALLEL_NUM = 16
 ROUND_NUM = 5
 USE_STREAM = True
-OUT_FILE = None #"test_results.txt" # None # "test_results.txt"
+OUT_FILE = None # "test_results.txt" # None # "test_results.txt"
 
 def single_id_request(_id):
     import requests
@@ -35,8 +35,8 @@ def stream_post(inps):
     data = {"query":"你可以做什么？", "history":[["你好", "你好，我是小PAI，是人工智能机器人。"]],"request_id":"REQ"+str(req_id)} # "request_id":"REQ"+str(req_id)
     # data = {"query": "那你明年多大啊？", "history": [["你好，你多大了", f"我{req_id+1}岁啦！"]]}  # "request_id":"REQ"+str(req_id)
     # lora_name = "skip" if random.random() < 0.5 else "default"
-    lora_name = "default"
-    return_lgt = True # True if random.random() > 0.5 else False
+    lora_name = "skip"
+    return_lgt = False # True if random.random() > 0.5 else False
     data.update({"gen_kwargs":{"max_length":256, "temperature":0.01, "adapter_name": lora_name, "return_logits":return_lgt}})
     print(f"submitted: {req_id}")
     stream_res = requests.post(LOCAL_URL+"/stream_chat_post", data=json.dumps(data), stream=True) # headers=headers,
@@ -73,11 +73,12 @@ def chat_post(inps):
     task_map = {0:data0, 1:data1, 2:data2, 3:data3}
     # data = task_map[int(req_id) % 4]
     data = task_map[0]
+
     lora_name = "skip"
     return_lgt = False # True if random.random() > 0.5 else False
     # max_length = random.randint(1000, 1200)
     max_length = 256
-    data.update({"gen_kwargs":{"max_length":max_length, "temperature":0.01, "adapter_name": lora_name}})
+    data.update({"gen_kwargs":{"max_new_tokens":max_length, "temperature":0.01, "adapter_name": lora_name}})
     
     req_res = requests.post(LOCAL_URL+"/chat", data=json.dumps(data))
     try:

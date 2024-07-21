@@ -54,7 +54,7 @@ namespace liteqwen{
         ~Data();
         void Init(DataType type, const std::vector <int> &shape, int gpu_id);
         void Init(DataType type, const std::vector <int> &shape, int gpu_id, bool managed);
-        void CpuDelete();
+
 
         void print();
         void print(std::string data_name);
