@@ -42,10 +42,13 @@ def manager_cleaner_start():
         while True:
             # ======== data_id 健康检测 ================
             if "ddp_processes" in DDP_POOL.extra:
-                processes_info = DDP_POOL.extra["ddp_processes"]
+                processes_info = [x for x in DDP_POOL.extra["ddp_processes"].split("|") if len(x)>0]
             else:
                 processes_info = []
-            for data_id, pid, gpid in processes_info:
+            dead_processes = []
+            alive_processes = []
+            for process_info_str in processes_info:
+                data_id, pid, gpid = process_info_str.split(",")
                 cmd = f'ps -aux | grep "{pid}" | grep python'
                 str_res = os.popen(cmd).read()
                 is_alive = len([x for x in str_res.split("\n") if len(x)>0]) == 2
@@ -56,6 +59,18 @@ def manager_cleaner_start():
                     else:
                         latest_log = ""
                     logger.error(f"DDP{data_id} CRASHED: pid={pid}, latest_action={latest_log}")
+                    dead_processes.append((data_id, pid, gpid))
+                else:
+                    alive_processes.append(process_info_str)
+
+            DDP_POOL.extra["ddp_processes"] = "|".join(alive_processes)
+            # data_id进程重启
+            if len(dead_processes) > 0:
+                while DDP_POOL.extra.get("ddp_restarting", False):
+                    time.sleep(0.2)
+                if "tobe_amended" not in DDP_POOL.extra:
+                    DDP_POOL.extra["tobe_amended"] = []
+                DDP_POOL.extra["tobe_amended"] = DDP_POOL.extra["tobe_amended"] + [int(x[0]) for x in dead_processes]
 
             cur_queue_len = DDP_POOL.queue.qsize()
             if not cur_queue_len < prev_queue_len and cur_queue_len-len(DDP_POOL.dict) > 0:
@@ -114,22 +129,40 @@ def manager_cleaner_start():
 def start_ddp_inferer(async_loops, queue, mgr_dict, extra_dict, buffer_info):
     # mp.spawn(main, nprocs=DATA_PARALLEL_SIZE, args=(queue, mgr_dict, extra_dict, buffer_info))
     for i in range(int(DATA_PARALLEL_SIZE)):
-        p = mp.Process(target=infer_worker_loop, args=(i, PIPELINE_PARALLEL_SIZE, NUM_GPUS, async_loops[i], queue, mgr_dict, extra_dict, buffer_info))
+        p = mp.Process(target=infer_worker_loop, args=(i, PIPELINE_PARALLEL_SIZE, NUM_GPUS, async_loops[i], queue, mgr_dict, extra_dict, buffer_info, False, -10))
         p.start()
 
-def raise_io_limit():
-    cmd = "ulimit -SHn 65535"
-    str_res = os.popen(cmd).read()
-    logger.info(f"io limit raised: {str_res}")
-    return
+def amend_ddp_inferer_loop(async_loops, queue, mgr_dict, extra_dict, buffer_info):
+    amend_interval = 10.0
+    while True:
+        if "tobe_amended" not in extra_dict or len(extra_dict["tobe_amended"])==0:
+            time.sleep(amend_interval)
+            continue
+        extra_dict["ddp_restarting"] = True
+        amending_data_ids = list(set([x for x in extra_dict["tobe_amended"]]))
+        next_loading_seq = amending_data_ids[1:] + [-1]
+        seq_indices = list(range(len(amending_data_ids)))
+        logger.info(f"DDP restarting {len(amending_data_ids)} processes: {amending_data_ids}")
+        for seq_id, data_id, next_load_id in zip(seq_indices, amending_data_ids, next_loading_seq):
+            logger.info(f"restarting DDP process on data_id={data_id}, is_first={seq_id==0}, next_id={next_load_id}")
+            p = mp.Process(target=infer_worker_loop, args=(data_id, PIPELINE_PARALLEL_SIZE, NUM_GPUS, async_loops[data_id], queue, mgr_dict, extra_dict, buffer_info, seq_id==0, next_load_id))
+            p.start()
+        extra_dict["tobe_amended"] = []
+        extra_dict["ddp_restarting"] = False
+        time.sleep(2.0)
+
+# def raise_io_limit():
+#     cmd = "ulimit -SHn 65535"
+#     str_res = os.popen(cmd).read()
+#     logger.info(f"io limit raised: {str_res}")
+#     return
 
 global GLOB_RES_BUFFER
 global GLOB_TOKEN_BUFFER
 
-
 if __name__ == "__main__":
     logger.info('main pid is %s' % os.getpid())
-    raise_io_limit()
+    # raise_io_limit()
 
     server_process = start_server_process()
     clean_process = manager_cleaner_start()
@@ -146,6 +179,8 @@ if __name__ == "__main__":
 
     process_loops = [asyncio.new_event_loop() for _ in range(int(DATA_PARALLEL_SIZE))]
     start_ddp_inferer(process_loops, DDP_POOL.queue, DDP_POOL.dict, DDP_POOL.extra, DDP_POOL.buffer_info)
+    amend_ddp_inferer_loop(process_loops, DDP_POOL.queue, DDP_POOL.dict, DDP_POOL.extra, DDP_POOL.buffer_info)
+
     server_process.join()
     clean_process.join()
 

@@ -70,12 +70,12 @@ global enlable_last_word
 enlable_last_word = False # debug用，使用update_log输出进程crash前最后更新的打印。
 global inferer
 
-def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop, queue, mgr_dict, extra_dict, buffer_info):
+def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop, queue, mgr_dict, extra_dict, buffer_info, is_first_load, next_loading):
     logger.info('DDP%s: current ddp pid is %s, group id is %s.' % (data_id, os.getpid(), os.getpgrp()))
     if "ddp_processes" not in extra_dict:
-        extra_dict["ddp_processes"] = [(data_id, os.getpid(), os.getpgrp())]
+        extra_dict["ddp_processes"] = f"{data_id},{os.getpid()},{os.getpgrp()}"
     else:
-        extra_dict["ddp_processes"].append((data_id, os.getpid(), os.getpgrp()))
+        extra_dict["ddp_processes"] += f"|{data_id},{os.getpid()},{os.getpgrp()}"
 
     extra_log_key = f"ddp_process_log{data_id}"
     def update_log(content):
@@ -96,15 +96,26 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
     token_smem_info = {"name": buffer_pool.token_buf_name, "size_t": buffer_pool.max_qsize*buffer_pool.token_record_stride*4, "record_maxlen": buffer_pool.token_record_stride}
     token_pool = np.ndarray(shape=(buffer_pool.max_qsize, buffer_pool.token_record_stride), dtype=np.int32, buffer=buffer_pool.token_buffer.buf)
 
-    # 按照data_id顺序加载。
-    if data_id == 0:
-        inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
-        extra_dict["loading_id"] = 1
+    if next_loading < -1:
+        # 按照data_id顺序加载。
+        if data_id == 0:
+            inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
+            extra_dict["loading_id"] = 1
+        else:
+            while ("loading_id" not in extra_dict or not extra_dict["loading_id"] == data_id):
+                time.sleep(0.5)
+            inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
+            extra_dict["loading_id"] += 1
     else:
-        while ("loading_id" not in extra_dict or not extra_dict["loading_id"] == data_id):
-            time.sleep(0.5)
-        inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
-        extra_dict["loading_id"] += 1
+        # 按照is_first_load以及next_loading的指定顺序加载。
+        if is_first_load:
+            inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
+            extra_dict["loading_id"] = next_loading
+        else:
+            while ("loading_id" not in extra_dict or not extra_dict["loading_id"] == data_id):
+                time.sleep(0.5)
+            inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
+            extra_dict["loading_id"] += next_loading
     logger.info(f"DDP: data_id={data_id} model loaded...")
 
     # 协程锁，以及每个协程占用中的record_id记录。
@@ -287,7 +298,7 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
                     if is_expired:
                         # 如果c++还在batch队列中，使用liteqwen_connector.delete_waiting_req移除。如果c++已经开始推理，set_expire会安全处理推理中的样本
                         inferer.liteqwen_connector.delete_waiting_req(req_id)
-                        inferer.liteqwen_connector.set_expire(req_id) # 这里不能主动delete c++的资源，可能让ctx_ref->Append变成nullptr->Append导致崩溃。
+                        inferer.liteqwen_connector.set_expire(req_id) # 这里不能主动delete_req清理c++的资源，可能会让ctx_ref->Append变成nullptr->Append导致崩溃。
                         if not is_stream:
                             waited_tm = (datetime.datetime.now() - cli_submit_tm).total_seconds()
                             err_msg = f"RUNTIME ERROR: DDP{data_id}: skipping rec={buf_record_id}, req_id={req_id}, after {waited_tm} secs since client submit tm={cli_submit_tm}, timeout expired during generation."
