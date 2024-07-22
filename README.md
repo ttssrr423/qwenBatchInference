@@ -42,8 +42,18 @@ liteqwen吞吐量：461字符/秒，显存占用12.9G，支持推理长度5K
 
 安装完成后修改`configuration.json`，检查模型路径、lora配置，以及端口号。
 
+之后运行
+```angular2html
+# 增加文件写入上限
+ulimit -SHn 5120
+# 清除被占用的shared memory
+rm /dev/shm/*
+```
+
 修改完配置，直接启动的话运行`python start_server.py`
 也可以`nohup python daemon_start_server.py &`，后台守护运行启动脚本时，会自动根据`nvidia-smi`脚本的显存占用比例，判定服务是否正常。一般服务挂了的话，显存占用会归零，被检测到后，`daemon_start_server.py`会自动运行进程清理`clean_proc.sh`，之后重启服务。
+
+一键启动的话可以使用`start_daemon_server.sh`
 
 服务启动好之后，可以运行`mock_cli.py`测试一下接口调用的吞吐量或生成内容。
 修改开头的 

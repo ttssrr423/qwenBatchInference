@@ -75,6 +75,12 @@ class ContextPool {
             this->time_updating = false;
         }
 
+        void SetExpire() {
+            auto new_ts = std::chrono::system_clock::now() - std::chrono::seconds(3600);
+            this->timestamp = new_ts;
+            this->value.isEnding = true;
+        }
+
         ResponseContext* GetValuePtr() {
             return &(this->value);
         }
@@ -102,7 +108,9 @@ class ContextPool {
     std::vector<AllocateParam> Reload(int data_id, std::string preparer_lora_name, bool preparer_is_empty, PipelineKVPool* kv_cache_ref);
     void SetDefaultMaxlen(int max_sequence_length);
     void DELETE(std::string key);
+    void DELETE_WAITING(std::string key);
     void UnsafeDelete(std::string key);
+    void SetExpire(std::string key);
     int GetLength();
     std::list<std::string> deleting_keys;
     // std::mutex request_locker;
@@ -111,7 +119,6 @@ class ContextPool {
     void SetReloadOff(int data_id);
     bool CanReload(int data_id);
     void ReloadIntervalCountdown(int data_id, int new_ct);
-
     private:
     std::map<int, int> reload_switch;
 

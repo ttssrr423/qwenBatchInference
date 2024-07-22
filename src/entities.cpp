@@ -246,6 +246,10 @@ bool ResponseContext::write_to_smem(int token_id, bool is_eos) {
 }
 
 bool ResponseContext::Append(int new_token, bool is_eos) {
+    if (this->isEnding) {
+        return false;
+    }
+    
     bool repeat_check_passed = true;
 
     int prev = this->tokens.back();

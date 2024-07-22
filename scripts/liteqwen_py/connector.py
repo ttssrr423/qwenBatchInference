@@ -24,6 +24,7 @@ liteqwen_lib.submit_request.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_
     ctypes.c_char_p, ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_int, ctypes.c_void_p, ctypes.c_bool]
 
 liteqwen_lib.delete_request.argtypes = [ctypes.c_void_p]
+liteqwen_lib.delete_waiting.argtypes = [ctypes.c_void_p]
 
 # (char *key, int shape_length, int *shape, int dtype, int oriDataType, void *oriData)
 liteqwen_lib.store_tensor.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
@@ -177,8 +178,11 @@ class Qwen2Inferer:
         print("initializing with layer-device setup: "+str(layer_to_device_list))
         # # (int world_size, int data_parallel_size, int pipeline_parallel, char* json_config_path, int layer_num, int* block2device_list, int max_dynamic_bsz, int max_sequence_length, int max_queue_size, int timeout)
         # print(f"python parsing model params to c++: layer_num={layer_num}, dynamic_bsz={max_dynamic_bsz}, BL={max_length}")
+        
+        # 使用ddp模式启动，python负责池分配，所以c++的进程数=data_parallel_size, 每个进程的推理线程数是1。c++的队列池也不需要太大，减少排队，尽量让排队发生在python，这样timeout计算更准确。
         running_thread_num = 1
-        liteqwen_lib.initialize_empty_qwen2(world_size, running_thread_num, data_parallel_size, pipeline_parallel_size, json_path.encode(), layer_num, (ctypes.c_int * layer_num)(*layer_to_device_list), max_dynamic_bsz, max_length, data_parallel_size*max_dynamic_bsz*5, int(self.timeout_in_secs*1000), py_smem_name.encode(), py_smem_size, record_length)
+        cpp_queue_max_size = running_thread_num*max_dynamic_bsz * 2
+        liteqwen_lib.initialize_empty_qwen2(world_size, running_thread_num, data_parallel_size, pipeline_parallel_size, json_path.encode(), layer_num, (ctypes.c_int * layer_num)(*layer_to_device_list), max_dynamic_bsz, max_length, cpp_queue_max_size, int(self.timeout_in_secs*1000), py_smem_name.encode(), py_smem_size, record_length)
 
         for di in range(data_parallel_size):
             dp_layer_devices = [di*pipeline_parallel_size + x for x in layer_to_device_list]
@@ -443,4 +447,10 @@ class Qwen2Inferer:
         return result
 
     def delete_req(self, req_id):
-        liteqwen_lib.delete_request(req_id)
+        liteqwen_lib.delete_request(req_id.encode())
+
+    def delete_waiting_req(self, req_id):
+        liteqwen_lib.delete_waiting(req_id.encode())
+    
+    def set_expire(self, req_id):
+        liteqwen_lib.set_expire(req_id.encode())

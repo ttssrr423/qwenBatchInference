@@ -285,3 +285,11 @@ liteqwen::Response get_generated(std::string request_id, bool is_incremental, bo
 void delete_request_ctx(std::string request_id) {
     liteqwen::thread_pool->DELETE(request_id);
 }
+
+void delete_waiting_request_ctx(std::string request_id) {
+    liteqwen::thread_pool->DELETE_WAITING(request_id);
+}
+
+void set_request_expire(std::string request_id) {
+    liteqwen::thread_pool->SetExpire(request_id);
+}

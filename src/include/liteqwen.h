@@ -51,5 +51,6 @@ int submit_inference(int record_id, const std::string& request_id, std::vector<i
 liteqwen::Response get_generated(std::string request_id, bool is_incremental, bool force_interupt, bool no_stream);
 
 void delete_request_ctx(std::string request_id);
-
+void delete_waiting_request_ctx(std::string request_id);
+void set_request_expire(std::string request_id);
 #endif //_LITEQWEN_H

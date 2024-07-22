@@ -219,4 +219,14 @@ extern "C" {
         std::string request_id_str = std::string(request_id);
         delete_request_ctx(request_id_str);
     }
+
+    DLL_EXPORT void delete_waiting(char* request_id) {
+        std::string request_id_str = std::string(request_id);
+        delete_waiting_request_ctx(request_id_str);
+    }
+
+    DLL_EXPORT void set_expire(char* request_id) {
+        std::string request_id_str = std::string(request_id);
+        set_request_expire(request_id_str);
+    }
 }

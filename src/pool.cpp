@@ -426,6 +426,16 @@ void ContextPool::SetDefaultMaxlen(int max_sequence_length) {
     this->default_maxlen = max_sequence_length;
 }
 
+void ContextPool::SetExpire(std::string key) {
+    res_lock_.lock();
+    if (finished_.find(key) != finished_.end()) {
+        NodeIter iter = finished_[key];
+        std::deque<std::shared_ptr<ContextPool::Node>> del_nd(iter, res_list_.end());
+        ((del_nd.front()).get())->SetExpire();
+    }
+    res_lock_.unlock();   
+}
+
 void ContextPool::UnsafeDelete(std::string key) {
     if (finished_.find(key) != finished_.end())
     {
@@ -461,7 +471,7 @@ void ContextPool::DELETE(std::string key) {
         finished_.erase(key);
         int finished_map_size = (int)(finished_.size());
         int res_list_size = (int)(res_list_.size());
-        printf("POOL: queue after cleaning %s remaining res map/queue size=%i/%i\n", key.c_str(), finished_map_size, res_list_size);
+        printf("POOL: result queue after cleaning %s remaining res map/queue size=%i/%i\n", key.c_str(), finished_map_size, res_list_size);
 
         if (finished_map_size == 0) {
             clear_res_list = true;
@@ -489,6 +499,17 @@ void ContextPool::DELETE(std::string key) {
         res_list_.clear();
     }
     res_lock_.unlock();
+}
+
+void ContextPool::DELETE_WAITING(std::string key) {
+    li_lock_.lock();
+    if (map_.find(key) != map_.end()) {
+        printf("POOL: removing waiting queue, key: %s, found.\n", key.c_str());
+        NodeIter iter = map_[key];
+        list_.erase(iter);
+        map_.erase(key);
+    }
+    li_lock_.unlock();
 }
 
 void ContextPool::Add(std::string key, ResponseContext value)

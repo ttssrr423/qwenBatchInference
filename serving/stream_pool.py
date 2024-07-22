@@ -4,6 +4,7 @@ import struct
 import datetime
 import numpy as np
 from enum import Enum
+from multiprocessing.resource_tracker import unregister
 
 class GenState(Enum):
     PREPARING = 1
@@ -30,11 +31,13 @@ class StreamPool():
 
         out_result_buffer = shared_memory.SharedMemory(create=True, size=total_size)
         buff_name = out_result_buffer.name
+        unregister(out_result_buffer._name, 'shared_memory')
 
         # int占用4个bytes，矩阵shape=[max_queue_size, max_sequence_length+32], record_id=row_id
         token_size = max_queue_size * (max_sequence_length+32) * 4
         out_token_buffer = shared_memory.SharedMemory(create=True, size=token_size)
         token_buf_name = out_token_buffer.name
+        unregister(out_token_buffer._name, 'shared_memory')
 
         buffer_meta = {
             "name": buff_name,
@@ -61,8 +64,8 @@ class StreamPool():
         # bytes("123-abc".encode("ascii"))
         # float_value = struct.unpack('<f', struct.pack('<f', 3.14))
         if as_json:
-            return json.dumps(buffer_meta)
-        return buffer_meta
+            return json.dumps(buffer_meta), out_result_buffer, out_token_buffer
+        return buffer_meta, out_result_buffer, out_token_buffer
 
     def __init__(self, meta_info, overwrite_timeout=120, as_json=True):
         if as_json:
@@ -87,6 +90,10 @@ class StreamPool():
         self.ptr_move_stride = 1
         self.token_pool = np.ndarray(shape=(self.max_qsize, self.token_record_stride), dtype=np.int32,
                                 buffer=self.token_buffer.buf)
+
+        unregister(self.buffer._name, 'shared_memory')
+        unregister(self.token_buffer._name, 'shared_memory')
+
 
     def set_dp(self, start, stride):
         self.record_pt = start
@@ -170,10 +177,28 @@ class StreamPool():
         self.write_int_to_buffer(ret_state.value, offset)
         return
 
-    def set_timeout(self, rid):
+    def set_timeout(self, rid, delay=0.0):
         time_offset = self.record_stride * rid + self.time_offset
-        new_ts = float(datetime.datetime.now().timestamp()) - self.overwrite_timeout - 20
+        if delay > 0:
+            # 重置上次更新时间延迟delay秒生效
+            new_ts = float(datetime.datetime.now().timestamp()) - self.overwrite_timeout + delay
+        else:
+            # 重置上次更新时间立即生效
+            new_ts = float(datetime.datetime.now().timestamp()) - self.overwrite_timeout - 20
         self.buffer.buf[time_offset:time_offset + 4] = struct.pack('<f', new_ts)
+        return
+
+    def coro_set_timeout(self, rid, coro_id, coro_occupied, delay=0.0):
+        time_offset = self.record_stride * rid + self.time_offset
+        if delay > 0:
+            # 重置上次更新时间延迟delay秒生效
+            new_ts = float(datetime.datetime.now().timestamp()) - self.overwrite_timeout + delay
+        else:
+            # 重置上次更新时间立即生效
+            new_ts = float(datetime.datetime.now().timestamp()) - self.overwrite_timeout - 20
+        self.buffer.buf[time_offset:time_offset + 4] = struct.pack('<f', new_ts)
+
+        coro_occupied[coro_id] = -1
         return
 
     def write_result(self, rid, text, is_first_frame=False):
@@ -214,9 +239,35 @@ class StreamPool():
                 self.write_string_to_buffer(req_id, record_offset + self.req_id_offset, is_utf8=False)
                 return self.record_pt
 
-            trial_num += 1
-            if trial_num >= self.max_qsize/self.ptr_move_stride: # 可能出于未知原因，资源已满，适当降低超时时间，并尝试中断其他生成。
-                print("PYTHON POOL WARNING: too much records occupied, maybe check for deletion after eos.")
-                if (cur_ts - prev_updated_ts) > 120.0:
-                    self.write_int_to_buffer(RetState.END.value, record_offset+self.consume_state_offset)
-                    trial_num = 0
+            # trial_num += 1
+            # if trial_num >= self.max_qsize/self.ptr_move_stride: # 可能出于未知原因，资源已满，适当降低超时时间，并尝试中断其他生成。
+            #     if (cur_ts - prev_updated_ts) > 120.0:
+            #         print("PYTHON POOL WARNING: too much records occupied, maybe check for deletion after eos.")
+            #         self.write_int_to_buffer(RetState.END.value, record_offset+self.consume_state_offset)
+            #         trial_num = 0
+
+    def coro_wait_for_start(self, req_id, coro_occupied_list, prev_rid):
+        if len(req_id) > self.max_request_id_len:
+            req_id = req_id[:self.max_request_id_len]
+        try_rid = prev_rid
+        while True:
+            cur_ts = float(datetime.datetime.now().timestamp())
+            try_rid = (try_rid + self.ptr_move_stride) % self.max_qsize
+            record_offset = try_rid * self.record_stride
+            time_offset = record_offset + self.time_offset
+            ts_bytes = bytes(self.buffer.buf[time_offset:time_offset + 4])
+            prev_updated_ts = float(struct.unpack('<f', ts_bytes)[0])
+            if (cur_ts - prev_updated_ts) > self.overwrite_timeout:
+                no_conflict = True
+                for occupied_id in coro_occupied_list:
+                    if occupied_id == try_rid:
+                        no_conflict = False
+                if not no_conflict:
+                    continue
+
+                # 通过刷新prev_update_time来占用record_id
+                self.buffer.buf[time_offset:time_offset + 4] = struct.pack('<f', cur_ts)
+                self.write_int_to_buffer(GenState.PREPARING.value, record_offset+self.gen_state_offset)
+                self.write_int_to_buffer(RetState.FETCHED.value, record_offset + self.consume_state_offset)
+                self.write_string_to_buffer(req_id, record_offset + self.req_id_offset, is_utf8=False)
+                return try_rid
