@@ -13,6 +13,7 @@ import multiprocessing as mp
 from serving.ddp_worker import infer_worker_loop
 from serving.stream_pool import StreamPool
 
+workspace = os.path.dirname(__file__)
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     datefmt="%m/%d/%Y %H:%M:%S",
@@ -51,15 +52,19 @@ def manager_cleaner_start():
                 data_id, pid, gpid = process_info_str.split(",")
                 cmd = f'ps -aux | grep "{pid}" | grep python'
                 str_res = os.popen(cmd).read()
-                is_alive = len([x for x in str_res.split("\n") if len(x)>0]) == 2
+                is_alive = len([x for x in str_res.split("\n") if len(x)>0 and "defunct" not in x]) == 2
                 if not is_alive:
                     data_key = f"ddp_process_log{data_id}"
                     if data_key in DDP_POOL.extra:
                         latest_log = DDP_POOL.extra[data_key]
                     else:
                         latest_log = ""
-                    logger.error(f"DDP{data_id} CRASHED: pid={pid}, latest_action={latest_log}")
+                    logger.error(f"ALIVE KEEPER: DDP{data_id} CRASHED, pid={pid}, latest_action={latest_log}")
                     dead_processes.append((data_id, pid, gpid))
+
+                    core_del_cmd = f"rm {workspace}/core.*"
+                    core_rm_res = os.popen(core_del_cmd).read()
+                    logger.warning(f"ALIVE KEEPER: executing {core_del_cmd}. res={core_rm_res}")
                 else:
                     alive_processes.append(process_info_str)
 
@@ -142,9 +147,8 @@ def amend_ddp_inferer_loop(async_loops, queue, mgr_dict, extra_dict, buffer_info
         amending_data_ids = list(set([x for x in extra_dict["tobe_amended"]]))
         next_loading_seq = amending_data_ids[1:] + [-1]
         seq_indices = list(range(len(amending_data_ids)))
-        logger.info(f"DDP restarting {len(amending_data_ids)} processes: {amending_data_ids}")
+        logger.info(f"ALIVE KEEPER: restarting {len(amending_data_ids)} processes: {amending_data_ids}")
         for seq_id, data_id, next_load_id in zip(seq_indices, amending_data_ids, next_loading_seq):
-            logger.info(f"restarting DDP process on data_id={data_id}, is_first={seq_id==0}, next_id={next_load_id}")
             p = mp.Process(target=infer_worker_loop, args=(data_id, PIPELINE_PARALLEL_SIZE, NUM_GPUS, async_loops[data_id], queue, mgr_dict, extra_dict, buffer_info, seq_id==0, next_load_id))
             p.start()
         extra_dict["tobe_amended"] = []

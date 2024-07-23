@@ -1,0 +1,95 @@
+07/23/2024 04:10:17 - INFO - __main__ - main pid is 19411
+07/23/2024 04:10:17 - INFO - __main__ - cleaning process started...
+07/23/2024 04:10:17 - INFO - serving.ddp_worker - DDP0: current ddp pid is 19451, group id is 19411.
+07/23/2024 04:10:17 - INFO - serving.ddp_worker - DDP: python loop: data_id=0/1 thread started.
+INFO:     Started server process [19438]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 8081): address already in use
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+Special tokens have been added in the vocabulary, make sure the associated word embeddings are fine-tuned or trained.
+initializing with layer-device setup: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+device -1 loading file pytorch_model-00001-of-00003.bin:   0%|          | 0/539 [00:00<?, ?it/s]device -1 loading file pytorch_model-00001-of-00003.bin:   0%|          | 1/539 [00:00<06:56,  1.29it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  16%|█▌        | 86/539 [00:00<00:03, 133.27it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  36%|███▌      | 192/539 [00:00<00:01, 297.47it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  55%|█████▍    | 296/539 [00:01<00:00, 441.91it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  70%|███████   | 378/539 [00:01<00:00, 513.27it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  85%|████████▍ | 457/539 [00:01<00:00, 535.61it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  98%|█████████▊| 529/539 [00:01<00:00, 535.77it/s]device -1 loading file pytorch_model-00001-of-00003.bin: 100%|██████████| 539/539 [00:01<00:00, 364.54it/s]
+device -1 loading file pytorch_model-00002-of-00003.bin:   0%|          | 0/861 [00:00<?, ?it/s]device -1 loading file pytorch_model-00002-of-00003.bin:   8%|▊         | 70/861 [00:00<00:01, 680.52it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  20%|█▉        | 171/861 [00:00<00:00, 850.22it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  30%|██▉       | 256/861 [00:00<00:00, 814.25it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  39%|███▉      | 338/861 [00:00<00:00, 701.86it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  48%|████▊     | 410/861 [00:00<00:00, 628.06it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  55%|█████▌    | 475/861 [00:00<00:00, 605.24it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  62%|██████▏   | 537/861 [00:00<00:00, 606.48it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  70%|██████▉   | 599/861 [00:00<00:00, 552.16it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  76%|███████▌  | 656/861 [00:01<00:00, 552.22it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  83%|████████▎ | 712/861 [00:01<00:00, 542.13it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  89%|████████▉ | 767/861 [00:01<00:00, 539.66it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  95%|█████████▌| 822/861 [00:01<00:00, 528.22it/s]device -1 loading file pytorch_model-00002-of-00003.bin: 100%|██████████| 861/861 [00:01<00:00, 596.50it/s]
+device -1 loading file pytorch_model-00003-of-00003.bin:   0%|          | 0/83 [00:00<?, ?it/s]device -1 loading file pytorch_model-00003-of-00003.bin:   1%|          | 1/83 [00:07<10:43,  7.85s/it]device -1 loading file pytorch_model-00003-of-00003.bin:  61%|██████▏   | 51/83 [00:07<00:03,  9.06it/s]device -1 loading file pytorch_model-00003-of-00003.bin: 100%|██████████| 83/83 [00:07<00:00, 10.39it/s]
+device -1 loading lora default:   0%|          | 0/560 [00:00<?, ?it/s]device -1 loading lora default:   3%|▎         | 17/560 [00:00<00:03, 165.00it/s]device -1 loading lora default:   6%|▌         | 34/560 [00:00<00:03, 156.13it/s]device -1 loading lora default:  10%|█         | 57/560 [00:00<00:02, 181.01it/s]device -1 loading lora default:  14%|█▎        | 76/560 [00:00<00:02, 169.45it/s]device -1 loading lora default:  18%|█▊        | 99/560 [00:00<00:02, 183.11it/s]device -1 loading lora default:  21%|██        | 118/560 [00:00<00:02, 170.63it/s]device -1 loading lora default:  25%|██▌       | 141/560 [00:00<00:02, 182.51it/s]device -1 loading lora default:  29%|██▊       | 160/560 [00:00<00:02, 171.68it/s]device -1 loading lora default:  33%|███▎      | 183/560 [00:01<00:02, 182.19it/s]device -1 loading lora default:  36%|███▌      | 202/560 [00:01<00:02, 173.10it/s]device -1 loading lora default:  40%|████      | 225/560 [00:01<00:01, 184.79it/s]device -1 loading lora default:  44%|████▎     | 244/560 [00:01<00:01, 175.97it/s]device -1 loading lora default:  48%|████▊     | 267/560 [00:01<00:01, 185.46it/s]device -1 loading lora default:  51%|█████     | 286/560 [00:01<00:01, 166.60it/s]device -1 loading lora default:  55%|█████▌    | 309/560 [00:01<00:01, 178.83it/s]device -1 loading lora default:  59%|█████▊    | 328/560 [00:01<00:01, 172.57it/s]device -1 loading lora default:  63%|██████▎   | 351/560 [00:01<00:01, 181.36it/s]device -1 loading lora default:  66%|██████▌   | 370/560 [00:02<00:01, 168.42it/s]device -1 loading lora default:  70%|███████   | 392/560 [00:02<00:00, 181.47it/s]device -1 loading lora default:  73%|███████▎  | 411/560 [00:02<00:00, 171.90it/s]device -1 loading lora default:  77%|███████▋  | 430/560 [00:02<00:00, 176.37it/s]device -1 loading lora default:  80%|████████  | 449/560 [00:02<00:00, 179.95it/s]device -1 loading lora default:  84%|████████▎ | 468/560 [00:02<00:00, 172.41it/s]device -1 loading lora default:  88%|████████▊ | 491/560 [00:02<00:00, 182.33it/s]device -1 loading lora default:  91%|█████████ | 510/560 [00:02<00:00, 174.15it/s]device -1 loading lora default:  95%|█████████▌| 533/560 [00:03<00:00, 184.51it/s]device -1 loading lora default:  99%|█████████▊| 552/560 [00:03<00:00, 176.21it/s]device -1 loading lora default: 100%|██████████| 560/560 [00:03<00:00, 177.76it/s]
+initializing cpp Qwen1.5 model, with num_layers=40, max_dynamic_bsz=16
+Data parallel worker data_id=0 has layers on devices [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+python smem psm_9320fd61 binded with size=10551296..
+lora configs loaded:
+default: r=8, modules=[k_proj,gate_proj,o_proj,v_proj,down_proj,q_proj,up_proj]
+data_id 0 is using devices[0, 1)
+setting up inference on data_id=0, using devices=[0, 1), num_layers=40, max_dynamic_bsz=16, max_BL=5120
+device 0 initialized cublas handler
+allocating kv-cache pools for data_id=0, size=[BL(5120), Hkv(40)*D(128)] * layer_num(40 in 1 stages) * 2(KV)
+kv cache layer ptr: key&value separation=1048576000, layer_stride=26214400
+stage with layers[0, 40) initialized the starting pointers for each layer.
+initializing BatchInputPreparer, max_B=16, max_BL=5120
+input preparer initialized...allocating cos & sin, max_len=5120, kv_channels=128, gpu_id=0
+preparing gpu rotary cos and sin with [seq_length, channel]=[5120, 128] on device 0
+data_id=0 loading all cpu weights to gpus according to device map.
+offloaded param model.embed_tokens.weight to cpu
+before buffer preparing
+allocated gptq buffers on device 0: state[5120, 1], dq=[1, 73400320]. starting make_q4
+quant weights prepared for data_id=0
+new curand initializing with key=0, curandSize=256x48
+### device (0): mem_free=10351MB, mem_total=24575MB
+warmup prefilling...
+warming up for data_id=0, lora detected=default, prefill_len=1876 ...
+KV_CACHING[gpu0]: successful allocate maxlen=1896, req_id=warmup0001. Empty memory, numel=<<+9707520>>
+KV_CACHING[gpu0]: successful allocate maxlen=44, req_id=warmup0002. MemoryInfo=[0,0]_[0,9707520]_<<+225280>>_[26214400]
+warmup decoding...
+KV_CACHING[gpu0]: free cache block=warmup0001, remaining block_ct=1
+KV_CACHING[gpu0]: free cache block=warmup0002, remaining block_ct=0
+07/23/2024 04:11:32 - INFO - serving.ddp_worker - DDP: data_id=0 model loaded...
+warmup finished for data_id=0
+loading_ct=1
+<=============data parallel id 0 ready for inference.===========
+07/23/2024 19:05:31 - INFO - __main__ - main pid is 11075
+07/23/2024 19:05:31 - INFO - __main__ - cleaning process started...
+07/23/2024 19:05:31 - INFO - serving.ddp_worker - DDP0: current ddp pid is 11118, group id is 11075.
+07/23/2024 19:05:31 - INFO - serving.ddp_worker - DDP: python loop: data_id=0/1 thread started.
+INFO:     Started server process [11102]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8081 (Press CTRL+C to quit)
+Special tokens have been added in the vocabulary, make sure the associated word embeddings are fine-tuned or trained.
+initializing with layer-device setup: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+device -1 loading file pytorch_model-00001-of-00003.bin:   0%|          | 0/539 [00:00<?, ?it/s]device -1 loading file pytorch_model-00001-of-00003.bin:   0%|          | 1/539 [00:00<06:17,  1.43it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  15%|█▌        | 81/539 [00:00<00:03, 135.97it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  31%|███       | 165/539 [00:00<00:01, 269.89it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  49%|████▉     | 265/539 [00:01<00:00, 427.08it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  67%|██████▋   | 360/539 [00:01<00:00, 543.46it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  82%|████████▏ | 442/539 [00:01<00:00, 555.34it/s]device -1 loading file pytorch_model-00001-of-00003.bin:  96%|█████████▌| 516/539 [00:01<00:00, 560.57it/s]device -1 loading file pytorch_model-00001-of-00003.bin: 100%|██████████| 539/539 [00:01<00:00, 380.92it/s]
+device -1 loading file pytorch_model-00002-of-00003.bin:   0%|          | 0/861 [00:00<?, ?it/s]device -1 loading file pytorch_model-00002-of-00003.bin:   8%|▊         | 65/861 [00:00<00:01, 636.62it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  17%|█▋        | 144/861 [00:00<00:01, 714.93it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  28%|██▊       | 245/861 [00:00<00:00, 817.16it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  38%|███▊      | 327/861 [00:00<00:00, 807.84it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  47%|████▋     | 408/861 [00:00<00:00, 682.73it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  56%|█████▌    | 479/861 [00:00<00:00, 624.57it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  63%|██████▎   | 544/861 [00:00<00:00, 621.57it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  71%|███████   | 608/861 [00:00<00:00, 610.59it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  78%|███████▊  | 670/861 [00:01<00:00, 565.27it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  85%|████████▍ | 728/861 [00:01<00:00, 565.65it/s]device -1 loading file pytorch_model-00002-of-00003.bin:  91%|█████████▏| 786/861 [00:01<00:00, 557.59it/s]07/23/2024 19:08:48 - INFO - __main__ - starting service daemon loop.
+07/23/2024 19:08:48 - INFO - __main__ - no running service detected, restarting service.
+['']
+
+07/23/2024 19:08:49 - INFO - __main__ - run stript started...
+(Not all processes could be identified, non-owned process info
+ will not be shown, you would have to be root to see it all.)
+07/23/2024 19:08:54 - INFO - __main__ - port_occupied=True
+07/23/2024 19:08:54 - INFO - __main__ - gpu_occupied=False
+(Not all processes could be identified, non-owned process info
+ will not be shown, you would have to be root to see it all.)
+07/23/2024 19:09:54 - INFO - __main__ - restart service finished...
+07/23/2024 19:10:47 - INFO - __main__ - starting service daemon loop.
+07/23/2024 19:10:47 - INFO - __main__ - no running service detected, restarting service.
+['']
+
+07/23/2024 19:10:47 - INFO - __main__ - run stript started...
+(Not all processes could be identified, non-owned process info
+ will not be shown, you would have to be root to see it all.)
+07/23/2024 19:10:52 - INFO - __main__ - port_occupied=True
+07/23/2024 19:10:53 - INFO - __main__ - gpu_occupied=False
+(Not all processes could be identified, non-owned process info
+ will not be shown, you would have to be root to see it all.)
+07/23/2024 19:11:53 - INFO - __main__ - restart service finished...
+07/23/2024 22:16:39 - INFO - __main__ - starting service daemon loop.
+07/23/2024 22:16:40 - INFO - __main__ - no running service detected, restarting service.
+['']
+
+07/23/2024 22:16:40 - INFO - __main__ - run stript started...
+(Not all processes could be identified, non-owned process info
+ will not be shown, you would have to be root to see it all.)
+07/23/2024 22:16:45 - INFO - __main__ - port_occupied=True
+07/23/2024 22:16:45 - INFO - __main__ - gpu_occupied=False
+(Not all processes could be identified, non-owned process info
+ will not be shown, you would have to be root to see it all.)
+07/23/2024 22:17:45 - INFO - __main__ - restart service finished...

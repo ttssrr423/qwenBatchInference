@@ -790,60 +790,58 @@ __global__ void tileCopyKernel(__half* outs, __half* inp, int repeat_num, int st
 
 
 
-template <int THREAD_PER_BLOCK>
-__global__ void GemvFp16Fp16Kernel2(__half *A, __half *B, __half *C, __half *bias, int k) {
+template <int THREAD_PER_BLOCK, int grid_bound>
+__global__ void GemvFp16Fp16Kernel2(__half *A, __half *B, __half *C, __half *bias, int k, int n_bound) {
     __shared__ __half sdata[THREAD_PER_BLOCK];
     unsigned int tid = threadIdx.x;
-    // 1. 计算
-    int st = blockIdx.x * 1;
-    int end = st + 1;
-    // for (int p = st; p < end; p++) {
-    int p = blockIdx.x;
+    
+    for (int p=blockIdx.x; p<n_bound; p+= grid_bound) {
+        sdata[tid] = __float2half(0.0f);
+        for (int i = tid; i < k; i += THREAD_PER_BLOCK) {
+            sdata[tid] += A[i] * B[p * k + i];
+        }
 
-    sdata[tid] = 0;
-    for (int i = tid; i < k; i += THREAD_PER_BLOCK) {
-        sdata[tid] += A[i] * B[p * k + i];
-    }
+        __syncthreads();
+        for (unsigned int s = 1; s < THREAD_PER_BLOCK; s *= 2) {
+            if ((tid & (2 * s - 1)) == 0) {
+                sdata[tid] += sdata[tid + s];
+            }
+            __syncthreads();
+        }
 
-    __syncthreads();
-    for (unsigned int s = 1; s < THREAD_PER_BLOCK; s *= 2) {
-        if ((tid & (2 * s - 1)) == 0) {
-            sdata[tid] += sdata[tid + s];
+        if (tid == 0) {
+            C[p] = sdata[0] + bias[p];
         }
         __syncthreads();
     }
-
-    if (tid == 0) {
-        C[p] = sdata[0] + bias[p];
-    }
-    __syncthreads();
 }
 
-template <int THREAD_PER_BLOCK>
-__global__ void GemvFp16Fp16Kernel2NoBias(__half *A, __half *B, __half *C, int k) {
+template <int THREAD_PER_BLOCK, int grid_bound>
+__global__ void GemvFp16Fp16Kernel2NoBias(__half *A, __half *B, __half *C, int k, int n_bound) {
    __shared__ __half sdata[THREAD_PER_BLOCK];
     unsigned int tid = threadIdx.x;
-    int p = blockIdx.x;
-    // 1. 计算
-    int st = blockIdx.x * 1;
-    int end = st + 1;
-    // for (int p = st; p < end; p++) {
-    sdata[tid] = 0;
-    for (int i = tid; i < k; i += THREAD_PER_BLOCK) {
-        sdata[tid] += A[i] * B[p * k + i];
-    }
-    __syncthreads();
-    for (unsigned int s = 1; s < THREAD_PER_BLOCK; s *= 2) {
-        if ((tid & (2 * s - 1)) == 0) {
-            sdata[tid] += sdata[tid + s];
+
+    for (int p=blockIdx.x; p<n_bound; p+= grid_bound) {
+        // 每次并行处理最多grid_bound个block，对应相同个out channel
+        sdata[tid] = __float2half(0.0f);
+
+        // 二分法累加k轴，计算点积。
+        for (int i = tid; i < k; i += THREAD_PER_BLOCK) {
+            sdata[tid] += A[i] * B[p * k + i];
+        }
+        __syncthreads();
+        for (unsigned int s = 1; s < THREAD_PER_BLOCK; s *= 2) {
+            if ((tid & (2 * s - 1)) == 0) {
+                sdata[tid] += sdata[tid + s];
+            }
+            __syncthreads();
+        }
+
+        if (tid == 0) {
+            C[p] = sdata[0];
         }
         __syncthreads();
     }
-
-    if (tid == 0) {
-        C[p] = sdata[0];
-    }
-    __syncthreads();
 }
 
 
@@ -1281,16 +1279,27 @@ void linear_fwd(const liteqwen::Data& out_tensor, const liteqwen::Data& x, const
         // cudaDeviceSynchronize();
     } else {
         // m=1时，常规的正方形划分m x n矩阵的并行度不够，所以需要尽量使用长条block=[1xmin(hidden,256)]，dimGrid=n来划分并行。
+        const int grid_bound = 12288;
         if (use_bias) {
-            dim3 dimBlock2(256);
-            dim3 dimGrid2(n);
             __half* bias_data = (__half*)(b.cudaData);
-            GemvFp16Fp16Kernel2<256> <<<dimGrid2,dimBlock2>>>(x_data, W_data, out_data, bias_data, k);
+            dim3 dimBlock2(256);
+            if (n > grid_bound) {
+                dim3 dimGrid2(grid_bound);
+                GemvFp16Fp16Kernel2<256, grid_bound> <<<dimGrid2, dimBlock2>>>(x_data, W_data, out_data, bias_data, k, n);
+            } else {
+                dim3 dimGrid2(n);
+                GemvFp16Fp16Kernel2<256, grid_bound> <<<dimGrid2, dimBlock2>>>(x_data, W_data, out_data, bias_data, k, n);
+            }
             // check_print(std::string("linearCust"), out, m*n, m, n, 2);
         } else {
             dim3 dimBlock2(256);
-            dim3 dimGrid2(n);
-            GemvFp16Fp16Kernel2NoBias<256> <<<dimGrid2,dimBlock2>>>(x_data, W_data, out_data, k);
+            if (n > grid_bound) {
+                dim3 dimGrid2(grid_bound);
+                GemvFp16Fp16Kernel2NoBias<256, grid_bound> <<<dimGrid2,dimBlock2>>>(x_data, W_data, out_data, k, n);
+            } else {
+                dim3 dimGrid2(n);
+                GemvFp16Fp16Kernel2NoBias<256, grid_bound> <<<dimGrid2,dimBlock2>>>(x_data, W_data, out_data, k, n);
+            }
         }
     }
 }

@@ -1,7 +1,0 @@
-setup.py
-liteqwen_py/connector.py
-liteqwen_py/libliteqwen_conn.so
-liteqwen_py.egg-info/PKG-INFO
-liteqwen_py.egg-info/SOURCES.txt
-liteqwen_py.egg-info/dependency_links.txt
-liteqwen_py.egg-info/top_level.txt

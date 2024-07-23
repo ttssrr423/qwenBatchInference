@@ -1,3 +1,0 @@
-/mnt/e/UbuntuFiles/codes/LiteBatchQwenServer/build/CMakeFiles/liteqwen_conn.dir
-/mnt/e/UbuntuFiles/codes/LiteBatchQwenServer/build/CMakeFiles/edit_cache.dir
-/mnt/e/UbuntuFiles/codes/LiteBatchQwenServer/build/CMakeFiles/rebuild_cache.dir

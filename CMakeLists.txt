@@ -42,7 +42,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DNOMINMAX -O2 /std:c++17 /arch:AVX /source-charset:utf-8")
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread --std=c++17 -O2 -march=native")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread --std=c++17 -O2 -march=native -g")
 endif()
 
 message(STATUS "CMAKE_CXX_FLAGS " ${CMAKE_CXX_FLAGS})

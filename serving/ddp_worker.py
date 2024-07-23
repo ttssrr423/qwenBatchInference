@@ -71,7 +71,7 @@ enlable_last_word = False # debug用，使用update_log输出进程crash前最�
 global inferer
 
 def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop, queue, mgr_dict, extra_dict, buffer_info, is_first_load, next_loading):
-    logger.info('DDP%s: current ddp pid is %s, group id is %s.' % (data_id, os.getpid(), os.getpgrp()))
+    logger.info('ALIVE KEEPER: DDP%s: registing ddp pid=%s, group id=%s.' % (data_id, os.getpid(), os.getpgrp()))
     if "ddp_processes" not in extra_dict:
         extra_dict["ddp_processes"] = f"{data_id},{os.getpid()},{os.getpgrp()}"
     else:
