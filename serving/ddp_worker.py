@@ -96,6 +96,7 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
     token_smem_info = {"name": buffer_pool.token_buf_name, "size_t": buffer_pool.max_qsize*buffer_pool.token_record_stride*4, "record_maxlen": buffer_pool.token_record_stride}
     token_pool = np.ndarray(shape=(buffer_pool.max_qsize, buffer_pool.token_record_stride), dtype=np.int32, buffer=buffer_pool.token_buffer.buf)
 
+    model_load_start_tm = datetime.datetime.now()
     if next_loading < -1:
         # 按照data_id顺序加载。
         if data_id == 0:
@@ -104,6 +105,8 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
         else:
             while ("loading_id" not in extra_dict or not extra_dict["loading_id"] == data_id):
                 time.sleep(0.5)
+                if (datetime.datetime.now() - model_load_start_tm).total_seconds() >= 300:
+                    break
             inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
             extra_dict["loading_id"] += 1
     else:
@@ -113,6 +116,8 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
             extra_dict["loading_id"] = next_loading
         else:
             while ("loading_id" not in extra_dict or not extra_dict["loading_id"] == data_id):
+                if (datetime.datetime.now() - model_load_start_tm).total_seconds() >= 300:
+                    break
                 time.sleep(0.5)
             inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
             extra_dict["loading_id"] += next_loading
