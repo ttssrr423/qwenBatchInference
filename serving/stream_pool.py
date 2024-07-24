@@ -237,6 +237,12 @@ class StreamPool():
                 self.write_int_to_buffer(GenState.PREPARING.value, record_offset+self.gen_state_offset)
                 self.write_int_to_buffer(RetState.FETCHED.value, record_offset + self.consume_state_offset)
                 self.write_string_to_buffer(req_id, record_offset + self.req_id_offset, is_utf8=False)
+
+                # 重置文本长度=0
+                len_bytes = int(0).to_bytes(length=4, byteorder="little", signed=True)
+                writing_bytes = len_bytes
+                text_offset = record_offset+self.results_offset
+                self.buffer.buf[text_offset:text_offset + 4] = writing_bytes
                 return self.record_pt
 
             # trial_num += 1
@@ -270,4 +276,10 @@ class StreamPool():
                 self.write_int_to_buffer(GenState.PREPARING.value, record_offset+self.gen_state_offset)
                 self.write_int_to_buffer(RetState.FETCHED.value, record_offset + self.consume_state_offset)
                 self.write_string_to_buffer(req_id, record_offset + self.req_id_offset, is_utf8=False)
+
+                # 重置文本长度=0
+                len_bytes = int(0).to_bytes(length=4, byteorder="little", signed=True)
+                writing_bytes = len_bytes
+                text_offset = record_offset+self.results_offset
+                self.buffer.buf[text_offset:text_offset + 4] = writing_bytes
                 return try_rid
