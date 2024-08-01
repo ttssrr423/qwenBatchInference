@@ -3,7 +3,13 @@ import asyncio
 import transformers
 
 from global_config import GLOBAL_CONFIG, WORLD_SIZE, PIPELINE_PARALLEL_SIZE, DATA_PARALLEL_SIZE
-from qwen2 import Qwen2ForCausalLM, Qwen2Config, Qwen2TokenizerFast
+try:
+    from qwen2 import Qwen2ForCausalLM, Qwen2Config, Qwen2TokenizerFast
+except:
+    from qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from qwen2.modeling_qwen2 import Qwen2ForCausalLM
+    from qwen2.configuration_qwen2 import Qwen2Config
+
 from transformers.generation.utils import LogitsProcessorList
 import time
 import json

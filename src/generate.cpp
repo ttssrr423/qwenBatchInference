@@ -351,10 +351,10 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
         }
 
         normalized_hidden.Free(should_free);
-
+        
         if (is_prefill)
             timer->regist(std::string("apply_rotary")+std::to_string(layer_id));
-        apply_rotary_embeddings(q_proj_layer, k_proj_layer, dynamic_bsz, dynamic_L, hidden_size, attention_heads, local_cos, local_sin);
+        apply_rotary_embeddings(q_proj_layer, k_proj_layer, dynamic_bsz, dynamic_L, hidden_size, attention_heads, kv_heads, local_cos, local_sin);
 
         // 全量或增量写入预分配的KV缓存地址中。
         if (is_prefill) {

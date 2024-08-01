@@ -12,7 +12,7 @@
 #include "kv_cache.h"
 
 void cpu_embedding_fwd(int gpu_id, const liteqwen::Data& out_tensor, int* cpu_input_ids, const liteqwen::Data& embedding_weights, int input_offset, int lookup_len, int channel);
-void apply_rotary_embeddings(const liteqwen::Data& query, const liteqwen::Data& key, int dynamic_bsz, int dynamic_l, int hidden_size, int head_num, const liteqwen::Data& cos, const liteqwen::Data& sin);
+void apply_rotary_embeddings(const liteqwen::Data& query, const liteqwen::Data& key, int dynamic_bsz, int dynamic_l, int hidden_size, int head_num, int kv_head_num, const liteqwen::Data& cos, const liteqwen::Data& sin);
 void rotary_lookup(bool is_prefill, int gpu_id, const liteqwen::Data& out_cos, const liteqwen::Data& out_sin, const liteqwen::Data& batch_bids, const liteqwen::Data& batch_starts, const liteqwen::Data& cos_gpu, const liteqwen::Data& sin_gpu, int input_offset, int lookup_len, int channel, int dynamic_bsz);
 void decode_attention(const liteqwen::Data& attended_out, const liteqwen::Data& scores, liteqwen::StringArray input_request_ids, int bl_bound, int batch_maxt, int layer_id, const liteqwen::Data& query, const liteqwen::Data& bl_batch_ids, const liteqwen::Data& start_positions, int max_dynamic_bsz, liteqwen::PipelineKVPool* kv_cache_ref, int kv_heads, int channel);
 void rms_norm(const liteqwen::Data& out_tensor, const liteqwen::Data& hidden_in, const liteqwen::Data& norm_w, int sequence_length, int channel);

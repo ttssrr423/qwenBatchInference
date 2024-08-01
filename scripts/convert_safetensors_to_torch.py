@@ -1,5 +1,5 @@
-dst_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_newbin"
-src_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_new"
+dst_path = "/mnt/e/UbuntuFiles/models_saved/qwen2_7b_int4_gptq_bin"
+src_path = "/mnt/e/UbuntuFiles/models_saved/qwen2_7b_int4_gptq"
 
 torch_name = "pytorch_model-0000{0}-of-0000{1}.bin"
 safetensor_name = "model-0000{0}-of-0000{1}.safetensors"
@@ -23,7 +23,8 @@ def start_convert():
         weight_info["weight_map"] = new_map
         json.dump(weight_info, open(os.path.join(dst_path, "pytorch_model.bin.index.json"),  mode="w"), indent=4)
 
-    file_names = ["model-00001-of-00003.safetensors", "model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]
+    # file_names = ["model-00001-of-00003.safetensors", "model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]
+    file_names = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
     file_ct = 0
     for file in file_names:
         safetensor_file = os.path.join(src_path, file)
@@ -36,7 +37,7 @@ def start_convert():
                 param = f.get_tensor(nm)
                 state_dict[nm] = param
             par_len = len(state_dict)
-            bin_file_name = torch_name.format(file_ct, 3)
+            bin_file_name = torch_name.format(file_ct, len(file_names))
             print(f"saving torch bin {bin_file_name} with {par_len} params")
             torch.save(state_dict, open(os.path.join(dst_path, bin_file_name), mode="wb"))
 

@@ -1,14 +1,22 @@
-from qwen2 import Qwen2ForCausalLM, Qwen2Config, Qwen2TokenizerFast
+try:
+    from qwen2 import Qwen2ForCausalLM, Qwen2Config, Qwen2TokenizerFast
+except:
+    from qwen2.tokenization_qwen2_fast import Qwen2TokenizerFast
+    from qwen2.modeling_qwen2 import Qwen2ForCausalLM
+    from qwen2.configuration_qwen2 import Qwen2Config
+
 from peft import PeftModel
 device = "cuda:0"
 import json
 from transformers import GenerationConfig
 
 model_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_newbin"
-lora_path =  "/mnt/e/UbuntuFiles/models_saved/ppt_outline_epoch3"
+# model_path = "/mnt/e/UbuntuFiles/models_saved/qwen2_7b_int4_gptq_bin"
+lora_path = "/mnt/e/UbuntuFiles/models_saved/ppt_outline_epoch3"
 default_gen_config = GenerationConfig()
 default_gen_config.temperature = 0.01
 
+from auto_gptq import AutoGPTQForCausalLM
 
 default_messages = [
                     {"role": "user", "content": "你好"},
@@ -24,7 +32,8 @@ def inference():
         device_map="auto"
     )
     model.eval()
-    model = PeftModel.from_pretrained(model, lora_path)
+    if lora_path is not None:
+        model = PeftModel.from_pretrained(model, lora_path)
 
     tokenizer = Qwen2TokenizerFast.from_pretrained(model_path, trust_remote_code=True)
 

@@ -686,12 +686,14 @@ __global__ void copyFp16ToFp32Kernel(float* out, __half* in, int numel) {
     }
 }
 
-template<int head_num, int channel>
-__global__ void RotaryHeadedKernel(__half* q_data, __half* k_data, __half* cos, __half* sin, int dynamic_bsz, int dynamic_l)
+template<int channel>
+__global__ void RotaryHeadedKernel(__half* q_data, __half* k_data, __half* cos, __half* sin, int dynamic_bsz, int dynamic_l, int head_num, int kv_head_num)
 {
     // dimGrid(dynamic_l*H), dimBlock(64)
     int half_chn_id = threadIdx.x;
-    // int head_id = blockIdx.x % head_num;
+    int head_id = blockIdx.x % head_num;
+    int head_ratio = head_num / kv_head_num;
+    int kv_head_id = head_id / head_ratio;
     int bkl_id = blockIdx.x;
     int pos =  bkl_id / head_num;
     int half_chn = channel / 2;
@@ -703,11 +705,12 @@ __global__ void RotaryHeadedKernel(__half* q_data, __half* k_data, __half* cos, 
     __half sin_val_2 = sin[pos*channel + paring_chn_id];
 
     int row_head_offset = bkl_id * channel;
+    int kv_row_head_offset = (pos * kv_head_num + kv_head_id) * channel;
 
     __half orig_q_data_1 = q_data[row_head_offset + half_chn_id];
-    __half orig_k_data_1 = k_data[row_head_offset + half_chn_id];
+    __half orig_k_data_1 = k_data[kv_row_head_offset + half_chn_id];
     __half orig_q_data_2 = q_data[row_head_offset + paring_chn_id];
-    __half orig_k_data_2 = k_data[row_head_offset + paring_chn_id];
+    __half orig_k_data_2 = k_data[kv_row_head_offset + paring_chn_id];
 
     __half q_embed_1 = orig_q_data_1 * cos_val_1 - orig_q_data_2 * sin_val_1;
     __half q_embed_2 = orig_q_data_2 * cos_val_2 + orig_q_data_1 * sin_val_2;
@@ -717,8 +720,8 @@ __global__ void RotaryHeadedKernel(__half* q_data, __half* k_data, __half* cos, 
 
     q_data[row_head_offset + half_chn_id] = q_embed_1;
     q_data[row_head_offset + paring_chn_id] = q_embed_2;
-    k_data[row_head_offset + half_chn_id] = k_embed_1;
-    k_data[row_head_offset + paring_chn_id] = k_embed_2;
+    k_data[kv_row_head_offset + half_chn_id] = k_embed_1;
+    k_data[kv_row_head_offset + paring_chn_id] = k_embed_2;
 }
 
 __global__ void addKernel(__half* out, __half* in, size_t boundary) {
@@ -1168,11 +1171,11 @@ void quant4_lora_linear_fwd(const liteqwen::Data& out_tensor, const liteqwen::Da
     // }
 }
 
-void apply_rotary_embeddings(const liteqwen::Data& query, const liteqwen::Data& key, int dynamic_bsz, int dynamic_l, int hidden_size, int head_num, const liteqwen::Data& cos, const liteqwen::Data& sin) {
+void apply_rotary_embeddings(const liteqwen::Data& query, const liteqwen::Data& key, int dynamic_bsz, int dynamic_l, int hidden_size, int head_num, int kv_head_num, const liteqwen::Data& cos, const liteqwen::Data& sin) {
     int channel = hidden_size / head_num;
     int half_channel = channel / 2;
-    if (channel != 128 || head_num != 40) {
-        printf("wrong with qwen2-14b rotary shape, make sure attention head num=40 and per_head_hidden=128\n");
+    if (channel != 128 || head_num % kv_head_num != 0) {
+        printf("wrong with qwen2-14b rotary shape, make sure attention head nums for query=%i, kv=%i are correct, and per_head_hidden=128\n");
         throw("");
     }
     __half* query_data = (__half*)query.cudaData;
@@ -1182,7 +1185,7 @@ void apply_rotary_embeddings(const liteqwen::Data& query, const liteqwen::Data& 
     // NOTICE: dynamic_l = dynamic_bl if is_prefill, else dynamic_l=dynamic_bsz
     dim3 dimGrid(dynamic_l*head_num);
     // block_size = 64 = half_channel
-    RotaryHeadedKernel<40, 128><<<dimGrid, 64>>>(query_data, key_data, cos_data, sin_data, dynamic_bsz, dynamic_l);
+    RotaryHeadedKernel<128><<<dimGrid, 64>>>(query_data, key_data, cos_data, sin_data, dynamic_bsz, dynamic_l, head_num, kv_head_num);
 }
 
 void inplace_add_half(const liteqwen::Data& a, const liteqwen::Data& b, size_t boundary) {

@@ -52,7 +52,7 @@ def manager_cleaner_start():
                 data_id, pid, gpid = process_info_str.split(",")
                 cmd = f'ps -aux | grep "{pid}" | grep python'
                 str_res = os.popen(cmd).read()
-                is_alive = len([x for x in str_res.split("\n") if len(x)>0 and "defunct" not in x]) == 2
+                is_alive = len([x for x in str_res.split("\n") if len(x)>0 and "defunct" not in x]) >= 2
                 if not is_alive:
                     data_key = f"ddp_process_log{data_id}"
                     if data_key in DDP_POOL.extra:
@@ -62,7 +62,7 @@ def manager_cleaner_start():
                     logger.error(f"ALIVE KEEPER: DDP{data_id} CRASHED, pid={pid}, latest_action={latest_log}")
                     dead_processes.append((data_id, pid, gpid))
 
-                    core_del_cmd = f"rm {workspace}/core.*"
+                    core_del_cmd = f"rm {workspace}/core.* && kill -9 {pid}"
                     core_rm_res = os.popen(core_del_cmd).read()
                     logger.warning(f"ALIVE KEEPER: executing {core_del_cmd}. res={core_rm_res}")
                 else:

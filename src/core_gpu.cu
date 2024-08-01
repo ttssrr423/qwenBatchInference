@@ -644,7 +644,7 @@ void ManagedCudaMallocBigBuffer(int gpu_id, size_t size) {
     void * ret;
     auto &bigBuffers = bigBuffersMap[id];
     // printf("registering new big buffer, slow\n");
-    cudaMalloc(&ret, size);
+    // cudaMalloc(&ret, size);
     cudaError_t state = cudaMalloc(&ret, size);
     if (cudaSuccess != state)
         printf("Error: CUDA error when allocating %d MB memory! maybe there's no enough memory left on device.", size >> 20);

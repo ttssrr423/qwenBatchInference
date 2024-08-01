@@ -110,6 +110,7 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
             inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
             extra_dict["loading_id"] += 1
     else:
+        time.sleep(12.0) # 重新拉起时，防止进程终止后cuda来不及清空，sleep确保cuda清零。
         # 按照is_first_load以及next_loading的指定顺序加载。
         if is_first_load:
             inferer = get_inferer(data_id=data_id, token_smem_info=token_smem_info)
@@ -234,7 +235,7 @@ def infer_worker_loop(data_id, pipeline_parallel_size, world_size, process_loop,
 
                 logger.info(f"DDP{data_id}: submitting stream={is_stream}, record_id/coro_id={buf_record_id}/{coro_id}, req_id={req_id}, queued for {waited_tm} secs, gen_kwargs={hf_gen_kwargs}, role={inp_role}, hist_len={len(history)}, query={flat_text}")
                 hf_gen_kwargs.update({"seed": seed, "top_k": top_k, "adapter_name": lora_name_using})
-                # suc = inferer.liteqwen_connector.submit(buf_record_id, req_id, input_id_list, gen_config=hf_gen_kwargs)
+                logger.info(f"input_id_list={input_id_list}")
                 suc = 0
                 if suc == 0:
                     # c++队列满，最多等5秒，如果还没有推理EOS，则放弃该样本。
