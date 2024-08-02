@@ -9,6 +9,8 @@
 #include <vector>
 #include <chrono>
 
+#include "cutlass/numeric_types.h"
+#include "cutlass/platform/platform.h"
 #include "forward_gpu.cuh"
 #include "core_gpu.cuh"
 #include "kv_cache.h"
@@ -256,9 +258,9 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
         sbatch_kv_ptrs[tid] = reinterpret_cast<__half*>(cache_start_ptrs[batch_id*2+tid]);
     }
     if (tid == 0) {
-        m = -8192.0f;
+        m = -cutlass::platform::numeric_limits<float>::infinity(); //-8192.0f;
         l = 0.0f;
-        prev_m = 0.0f;
+        prev_m = -cutlass::platform::numeric_limits<float>::infinity(); // -8192.0f;
     }
 
     if (tid < steps_per_fold) {
@@ -287,7 +289,7 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
             //     printf("]\n");
             // }
         } else {
-            original_score = -8192.0f;
+            original_score = -cutlass::platform::numeric_limits<float>::infinity(); // -8192.0f
         }
         if (tid < steps_per_fold) {
             sdata[tid] = original_score;
@@ -304,7 +306,7 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
         }
         if (tid==0){
             m = max(m, sdata[0]);
-            // if (head_id == 0) {
+            // if (head_id == 3) {
             //     printf("batch=%i, head=%i, patch=[%i, %i), end=%i, max=max(sdata0=%f, m=%f)\n", batch_id, head_id, patch_left, patch_left+steps_per_fold, sbatch_starts[1], sdata[0], m);
             // }
         }
@@ -328,12 +330,25 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
         }
         __syncthreads();
         // 3. 更新rescale factor以及截至当前的Z
+        bool changed = prev_m < m;
+        bool restore_mi_to_minus_inf = false;
         if (tid == 0) {
-            rescale_factor = exp(prev_m - m);
-            // if (head_id == 0 && patch_left > sbatch_starts[0]) {
-            //     printf("batch=%i, head=%i, patch=[%i, %i), end=%i, prev_partition=%f, rescale_factor=%f, local_partition=%f, \n", batch_id, head_id, patch_left, patch_left+steps_per_fold, sbatch_starts[1], l, rescale_factor, sdata[0]);
-            // }
-            l = l * rescale_factor + sdata[0];
+            if (changed) {
+                rescale_factor = exp(prev_m - m);
+                // if (head_id == 3 && patch_left >= sbatch_starts[0]) {
+                //     printf("batch=%i, head=%i, patch=[%i, %i), end=%i, prev_partition=%f, rescale_factor=%f, local_partition=%f, \n", batch_id, head_id, patch_left, patch_left+steps_per_fold, sbatch_starts[1], l, rescale_factor, sdata[0]);
+                // }
+                l = l * rescale_factor + sdata[0];
+            } else {
+                // Only when bias is enabled, it's possible that all the first values
+                // of attention are masked to `-inf`. In that case we want to avoid
+                // `nan = exp2f(-inf - (-inf))` so we temporarily set `mi` to 0
+                if (m == -cutlass::platform::numeric_limits<float>::infinity()) {
+                    restore_mi_to_minus_inf = true;
+                    m = 0.0f;
+                }
+                rescale_factor = 1.0f;
+            }
         }
 
         if (tid < steps_per_fold) {
@@ -387,7 +402,11 @@ __global__ void SoftmaxFuseDecodeAttnKernel(__half* outs, float* scores, void** 
         __syncthreads();
 
         if (tid==0) {
-            prev_m = m;
+            if (restore_mi_to_minus_inf ) {
+                m = -cutlass::platform::numeric_limits<float>::infinity();
+            } else {
+                prev_m = m;
+            }
         }
     }
 
@@ -442,7 +461,7 @@ __global__ void SoftmaxFuseDecodeAttnKernelFp16(__half* outs, __half* scores, vo
     if (tid == 0) {
         m = hpad;
         l = hzero;
-        prev_m = hzero;
+        prev_m = hpad;
     }
 
     if (tid < steps_per_fold) {

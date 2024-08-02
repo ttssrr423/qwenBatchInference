@@ -1,5 +1,5 @@
 dst_path = "/mnt/e/UbuntuFiles/models_saved/qwen2_7b_int4_gptq_bin"
-src_path = "/mnt/e/UbuntuFiles/models_saved/qwen2_7b_int4_gptq"
+src_path = "/mnt/e/UbuntuFiles/models_saved/Qwen2-7B-Instruct-GPTQ-Int4"
 
 torch_name = "pytorch_model-0000{0}-of-0000{1}.bin"
 safetensor_name = "model-0000{0}-of-0000{1}.safetensors"

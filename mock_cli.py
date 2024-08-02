@@ -34,10 +34,10 @@ def stream_post(inps):
     headers = {"Content-Type":"application/json", "cache-control":"no-cache"}
     data = {"query":"你可以做什么？", "history":[["你好", "你好，我是小PAI，是人工智能机器人。"]],"request_id":"REQ"+str(req_id)} # "request_id":"REQ"+str(req_id)
     # data = {"query": "那你明年多大啊？", "history": [["你好，你多大了", f"我{req_id+1}岁啦！"]]}  # "request_id":"REQ"+str(req_id)
-    # lora_name = "skip" if random.random() < 0.5 else "default"
-    lora_name = "default"
-    return_lgt = True # True if random.random() > 0.5 else False
-    data.update({"gen_kwargs":{"max_length":256, "temperature":0.01, "adapter_name": lora_name, "return_logits":return_lgt}})
+    # adapter_name = "skip" if random.random() < 0.5 else "default"
+    adapter_name = "skip"
+    return_lgt = False # True if random.random() > 0.5 else False
+    data.update({"gen_kwargs":{"max_length":256, "temperature":0.01, "adapter_name": adapter_name, "return_logits":return_lgt}})
     print(f"submitted: {req_id}")
     stream_res = requests.post(LOCAL_URL+"/stream_chat_post", data=json.dumps(data), stream=True) # headers=headers,
     msg_ct = 0

@@ -351,7 +351,7 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
         }
 
         normalized_hidden.Free(should_free);
-        
+
         if (is_prefill)
             timer->regist(std::string("apply_rotary")+std::to_string(layer_id));
         apply_rotary_embeddings(q_proj_layer, k_proj_layer, dynamic_bsz, dynamic_L, hidden_size, attention_heads, kv_heads, local_cos, local_sin);
@@ -415,6 +415,7 @@ void forward(Data* logits_ptr, bool is_prefill, StringArray request_ids, int* cp
             decode_attention(attended_out, scores, request_ids, dynamic_bl, batch_maxlen, layer_id, q_proj_layer, local_bids, local_qstarts, max_B, kv_cache_ref, kv_heads, channels);
             // if (layer_id == 0 || layer_id == num_layers-1) {
             //     attended_out.print(std::string("decode_attended")+std::to_string(layer_id));
+            //     attended_out.check_value(std::string("decode_attended")+std::to_string(layer_id));
             // }
             q_proj_layer.Free(should_free);
             scores.Free(should_free);

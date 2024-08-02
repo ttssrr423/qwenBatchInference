@@ -37,13 +37,15 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
-    is_flash_attn_2_available,
+    # is_flash_attn_2_available,
     is_flash_attn_greater_or_equal_2_10,
     logging,
     replace_return_docstrings,
 )
 from .configuration_qwen2 import Qwen2Config
 
+def is_flash_attn_2_available():
+    return False
 
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
@@ -302,6 +304,10 @@ class Qwen2Attention(nn.Module):
             attn_weights = attn_weights + attention_mask
 
         # upcast attention to fp32
+        # prob_unchecked =  nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        # attn_weights = torch.where(torch.logical_or(torch.isnan(prob_unchecked), prob_unchecked>1.0), 0.999*torch.ones_like(prob_unchecked), prob_unchecked)
+        # attn_weights = attn_weights / attn_weights.sum(dim=-1, keepdim=True)
+
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
@@ -730,6 +736,8 @@ class Qwen2DecoderLayer(nn.Module):
                 f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
                 "unexpected results may be encountered."
             )
+
+        config._attn_implementation = "eager"
         self.self_attn = QWEN2_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
 
         self.mlp = Qwen2MLP(config)
@@ -1040,9 +1048,13 @@ class Qwen2Model(Qwen2PreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
+        layer_id = 0
         for decoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+
+            if layer_id == 27 or layer_id == 0:
+                aaaa = 1
 
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
@@ -1065,6 +1077,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 )
 
             hidden_states = layer_outputs[0]
+            # print(layer_id, hidden_states[:, -1])
+            layer_id += 1
 
             if use_cache:
                 next_decoder_cache = layer_outputs[2 if output_attentions else 1]

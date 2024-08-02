@@ -5,16 +5,17 @@ except:
     from qwen2.modeling_qwen2 import Qwen2ForCausalLM
     from qwen2.configuration_qwen2 import Qwen2Config
 
-from peft import PeftModel
+# from peft import PeftModel
 device = "cuda:0"
 import json
 from transformers import GenerationConfig
 
-model_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_newbin"
-# model_path = "/mnt/e/UbuntuFiles/models_saved/qwen2_7b_int4_gptq_bin"
-lora_path = "/mnt/e/UbuntuFiles/models_saved/ppt_outline_epoch3"
+# model_path = "/mnt/e/UbuntuFiles/models_saved/qwen15_14b_chat_int4_gptq_newbin"
+model_path = "/mnt/e/UbuntuFiles/models_saved/qwen2_7b_int4_gptq_bin" # Qwen2-7B-Instruct-GPTQ-Int4 # qwen2_7b_int4_gptq_bin
+lora_path = None # "/mnt/e/UbuntuFiles/models_saved/ppt_outline_epoch3"
 default_gen_config = GenerationConfig()
 default_gen_config.temperature = 0.01
+default_gen_config.do_sample=True
 
 from auto_gptq import AutoGPTQForCausalLM
 
@@ -73,6 +74,7 @@ def inference():
         print([(x,y) for x,y in zip(id_list, token_list)])
         generated_ids = model.generate(
             model_inputs.input_ids,
+            attention_mask=model_inputs.attention_mask,
             max_new_tokens=512,
             generation_config=default_gen_config
         )
